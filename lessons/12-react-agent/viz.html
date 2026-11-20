@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 12 课 · ReAct Agent</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .tr{font:13px/1.6 var(--mono);border-left:3px solid var(--line);padding:4px 10px;margin:4px 0;white-space:pre-wrap;animation:pop .4s}
+  .tr.th{border-color:var(--blue)} .tr.ac{border-color:var(--accent)} .tr.ob{border-color:var(--green);background:var(--green-soft)} .tr.fi{border-color:var(--accent);background:var(--accent-soft);font-weight:700} .tr.er{border-color:#dc2626;background:#fee2e2;color:#991b1b}
+  .tr b{font-weight:700}
+  .ctxbar{height:16px;background:var(--line);border-radius:4px;overflow:hidden}
+  .ctxbar div{height:100%;background:var(--accent);transition:width .3s}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../11-tool-use/viz.html">← 11 Tool Use</a><a href="../../index.html">目录</a><a href="../13-multi-agent-eval/viz.html">13 多 Agent、记忆与评估 →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 12</div>
+  <h1>ReAct Agent：思考 → 行动 → 观察，循环往复</h1>
+  <p class="lead">上一课的工具调用只有一来一回。<b>Agent</b> 就是把它放进一个循环：模型自己决定下一步做什么，看到结果后再决定下一步，直到任务完成。ReAct（Reason + Act）是最经典的框架 —— 简单到只有一个 while 循环。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>看一个 Agent 一步步完成任务</h2>
+  <p class="hint">选一个任务，点"下一步"或"自动运行"。左侧是 Agent 循环当前所处的阶段，右侧是完整轨迹（全部会作为上下文喂给下一轮的模型）。轨迹是预先写好的示意脚本，工具结果是真实计算的。</p>
+  <div class="row" id="tasks"></div>
+  <div class="row" style="margin-top:10px"><button class="primary" id="next">下一步</button><button id="auto">▶ 自动运行</button><button id="rst">重置</button>
+    <label style="font-size:14px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="noReact"> 对比：不用工具，直接回答</label></div>
+  <div class="grid2">
+    <div>
+      <svg id="loop" viewBox="0 0 360 300" style="width:100%;max-width:380px"></svg>
+      <div class="box">
+        <p style="margin:0 0 6px;font-size:14px">循环轮数：<b class="mono" id="turns">0</b> / 上限 8　　工具调用：<b class="mono" id="calls">0</b> 次</p>
+        <p style="margin:0 0 4px;font-size:14px">上下文长度：<b class="mono" id="ctxn">0</b> 字</p>
+        <div class="ctxbar"><div id="ctxb" style="width:0"></div></div>
+        <p class="hint" style="margin:6px 0 0">每一轮都要把全部历史重新发给模型 —— 轨迹越长越贵、越慢，这也是 Agent 需要“记忆管理”的原因（第 13 课）。</p>
+      </div>
+    </div>
+    <div><h3>轨迹（Trajectory）</h3><div id="trace" style="max-height:560px;overflow:auto"></div></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>Agent 的骨架代码</h2>
+  <p class="hint">无论框架多复杂，核心都是这个循环。<code>react_agent.py</code> 里有可运行的完整版本（支持离线模拟和真实 Claude API）。</p>
+<pre class="log">messages = [system_prompt(工具说明 + 输出格式), 用户任务]
+for turn in range(MAX_TURNS):              # 一定要设上限，防止死循环
+    reply = llm(messages, stop=["Observation:"])   # 让模型只写到“行动”为止
+    messages.append(reply)
+    if "Final Answer:" in reply:
+        return 解析出的答案
+    tool, args = parse_action(reply)       # 解析 Action: tool[args]
+    try:
+        obs = TOOLS[tool](args)
+    except Exception as e:
+        obs = f"错误：{e}"                  # 错误也是观察，让模型自己纠正
+    messages.append(f"Observation: {obs}")
+return "超过最大步数，任务未完成"</pre>
+</section>
+
+<footer>下一课：多 Agent、记忆与评估 —— 一个 Agent 不够用怎么办？怎么知道 Agent 做得好不好？</footer>
+</main>
+
+<script>
+/* ---------- 真实执行的工具 ---------- */
+const WEATHER = {'北京':{cond:'晴',temp:9},'上海':{cond:'多云',temp:18},'深圳':{cond:'阴',temp:23}};
+const KB = {'会员积分':'每消费 1 元积 1 分。200 分兑换中杯美式，500 分兑换任意饮品，1000 分兑换星河限定马克杯。','外卖配送':'配送范围 3 公里，起送价 25 元，配送费 4 元，满 50 元免配送费。','营业时间':'每天 7:30 至 22:00。'};
+const TOOLS = {
+  get_weather: a => WEATHER[a] ? JSON.stringify({city:a,...WEATHER[a]}) : (()=>{ throw new Error(`找不到城市“${a}”，请使用中文城市名`); })(),
+  calculator: a => { if(!/^[\d\s+\-*/().]+$/.test(a)) throw new Error('非法表达式'); return String(+Function(`return (${a})`)().toFixed(4)); },
+  search_docs: a => { const k = Object.keys(KB).find(k=>a.includes(k)||k.includes(a)); return k ? `[${k}] ${KB[k]}` : '没有找到相关文档'; },
+};
+
+/* ---------- 任务脚本：模型的“思考”和“行动”是写好的，观察来自真实执行 ---------- */
+const TASKS = [
+  {name:'温差换算', q:'北京和上海今天温差多少摄氏度？换算成华氏度的温差是多少？',
+   steps:[
+    ['th','需要两个城市的气温。先查北京。'], ['ac','get_weather','北京'],
+    ['th','北京 9°C。再查上海。'], ['ac','get_weather','上海'],
+    ['th','上海 18°C，温差 18 − 9 = 9°C。华氏温差 = 摄氏温差 × 1.8（温差不加 32），用计算器确认。'], ['ac','calculator','(18 - 9) * 1.8'],
+    ['fi','北京 9°C、上海 18°C，温差 9°C，相当于 16.2°F 的温差。'] ],
+   direct:'北京和上海今天温差大约 5°C，换算成华氏度大约是 41°F。（❌ 没有查询，凭空编造了气温；还把温差当成温度加了 32）'},
+  {name:'查资料', q:'星河咖啡会员要消费多少钱才能换一个限定马克杯？外卖满多少钱免配送费？',
+   steps:[
+    ['th','这是星河咖啡的内部信息，我不知道，需要查文档。先查会员积分规则。'], ['ac','search_docs','会员积分'],
+    ['th','1 元 = 1 分，马克杯需要 1000 分，所以要消费 1000 元。再查外卖规则。'], ['ac','search_docs','外卖配送'],
+    ['fi','消费满 1000 元（积 1000 分）可兑换星河限定马克杯；外卖订单满 50 元免配送费。'] ],
+   direct:'星河咖啡会员一般消费 500 元左右可以兑换马克杯，外卖满 30 元免配送费。（❌ 模型不可能知道这家虚构公司的规则，只能编）'},
+  {name:'出错与纠正', q:'What is the temperature in Shenzhen today, in Fahrenheit?',
+   steps:[
+    ['th','Need the weather in Shenzhen.'], ['ac','get_weather','Shenzhen'],
+    ['th','工具报错：要用中文城市名。改成“深圳”重试。'], ['ac','get_weather','深圳'],
+    ['th','23°C。华氏 = 23 × 1.8 + 32。'], ['ac','calculator','23 * 1.8 + 32'],
+    ['fi','It is 23°C in Shenzhen today, which is 73.4°F, and overcast.'] ],
+   direct:'It is about 75°F in Shenzhen today and sunny.（❌ 编造）'},
+];
+let ti = 0, si, trace, turns, calls, timer;
+function reset(){
+  si = 0; trace = []; turns = 0; calls = 0; stop();
+  trace.push({c:'', t:`任务：${TASKS[ti].q}`});
+  render('');
+}
+function step(){
+  const T = TASKS[ti];
+  if ($('#noReact').checked){ if (si===0){ trace.push({c:'fi', t:`Final Answer: ${T.direct}`}); si = T.steps.length; render('fi'); } return; }
+  if (si >= T.steps.length) return;
+  const [k,a,b] = T.steps[si++];
+  if (k==='th'){ turns++; trace.push({c:'th', t:`<b>Thought:</b> ${esc(a)}`}); render('th'); }
+  else if (k==='ac'){
+    calls++; trace.push({c:'ac', t:`<b>Action:</b> ${a}[${esc(b)}]`}); render('ac');
+    let obs, err=false; try { obs = TOOLS[a](b); } catch(e){ obs = '错误：'+e.message; err=true; }
+    setTimeout(()=>{ trace.push({c: err?'er':'ob', t:`<b>Observation:</b> ${esc(obs)}`}); render('ob'); }, 350);
+  }
+  else { turns++; trace.push({c:'fi', t:`<b>Final Answer:</b> ${esc(a)}`}); render('fi'); }
+}
+function render(stage){
+  $('#trace').innerHTML = trace.map(x=>`<div class="tr ${x.c}">${x.t}</div>`).join('');
+  $('#trace').scrollTop = 1e6;
+  $('#turns').textContent = turns; $('#calls').textContent = calls;
+  const n = trace.map(x=>x.t.replace(/<[^>]+>/g,'')).join('').length + 400;
+  $('#ctxn').textContent = n; $('#ctxb').style.width = Math.min(100, n/12) + '%';
+  $('#next').disabled = si >= TASKS[ti].steps.length || ($('#noReact').checked && si>0);
+  drawLoop(stage);
+}
+function drawLoop(stage){
+  const acc=cssVar('--accent'), ink=cssVar('--ink'), mut=cssVar('--muted'), soft=cssVar('--accent-soft');
+  const nodes = {th:[180,50,'Thought','思考下一步'], ac:[300,190,'Action','调用工具'], ob:[60,190,'Observation','观察结果']};
+  const col = {th:cssVar('--blue'), ac:acc, ob:cssVar('--green')};
+  let s = `<defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="${mut}"/></marker></defs>`;
+  s += `<path d="M215 70 Q 290 90 295 150" fill="none" stroke="${mut}" stroke-width="1.5" marker-end="url(#ar)"/>`;
+  s += `<path d="M255 205 Q 180 245 108 205" fill="none" stroke="${mut}" stroke-width="1.5" marker-end="url(#ar)"/>`;
+  s += `<path d="M65 150 Q 75 90 140 68" fill="none" stroke="${mut}" stroke-width="1.5" marker-end="url(#ar)"/>`;
+  for (const [k,[x,y,a,b]] of Object.entries(nodes)){
+    const on = stage===k || (stage==='er'&&k==='ob');
+    s += `<circle cx="${x}" cy="${y}" r="${on?44:38}" fill="${on?col[k]:cssVar('--card')}" stroke="${col[k]}" stroke-width="2.5"/>`;
+    s += `<text x="${x}" y="${y-2}" text-anchor="middle" font-size="13" font-weight="700" fill="${on?'#fff':col[k]}">${a}</text><text x="${x}" y="${y+15}" text-anchor="middle" font-size="11" fill="${on?'#fff':mut}">${b}</text>`;
+  }
+  const fon = stage==='fi';
+  s += `<line x1="180" y1="94" x2="180" y2="235" stroke="${fon?acc:mut}" stroke-dasharray="4 3" marker-end="url(#ar)"/>`;
+  s += `<rect x="120" y="240" width="120" height="40" rx="10" fill="${fon?acc:'none'}" stroke="${acc}" stroke-width="2"/><text x="180" y="265" text-anchor="middle" font-size="13" font-weight="700" fill="${fon?'#fff':acc}">Final Answer</text>`;
+  s += `<text x="186" y="160" font-size="11" fill="${mut}">任务完成？</text>`;
+  $('#loop').innerHTML = s;
+}
+function stop(){ clearInterval(timer); timer=null; $('#auto').textContent='▶ 自动运行'; }
+$('#next').onclick = step;
+$('#auto').onclick = ()=>{ if(timer) return stop(); $('#auto').textContent='⏸ 暂停'; timer=setInterval(()=>{ if(si>=TASKS[ti].steps.length) return stop(); step(); }, 1100); };
+$('#rst').onclick = reset; $('#noReact').oninput = reset;
+function drawTasks(){
+  $('#tasks').innerHTML = TASKS.map((t,i)=>`<button class="${i===ti?'on':''}" data-i="${i}">${t.name}</button>`).join('');
+  $$('#tasks button').forEach(b=>b.onclick=()=>{ ti=+b.dataset.i; drawTasks(); reset(); });
+}
+drawTasks(); reset();
+</script>
+</body>
+</html>

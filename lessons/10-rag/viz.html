@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 10 课 · RAG 检索增强生成</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .chunk{font-size:13px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;margin:5px 0;background:var(--bg);position:relative}
+  .chunk .id{font:11px var(--mono);color:var(--muted);margin-right:6px}
+  .chunk.hit{border-color:var(--accent);background:var(--accent-soft)}
+  .chunk .sc{float:right;font:12px var(--mono);color:var(--accent)}
+  .flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:13px;margin-bottom:12px}
+  .flow span.s{padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .pr{font:13px/1.6 var(--mono);white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:340px;overflow:auto}
+  .pr .ctx{background:var(--accent-soft)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../09-prompt-icl/viz.html">← 09 Prompt 与 ICL</a><a href="../../index.html">目录</a><a href="../11-tool-use/viz.html">11 Tool Use →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 10</div>
+  <h1>RAG：先检索，再生成</h1>
+  <p class="lead">模型的知识停留在训练截止日期，也不可能知道你公司内部的文档。与其重新训练，不如在提问时把<b>相关资料检索出来、放进上下文</b>里 —— 这就是 RAG（Retrieval-Augmented Generation）。它的核心是一个"语义搜索引擎"。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>完整走一遍 RAG 流程</h2>
+  <div class="flow"><span class="s">① 文档切块</span>→<span class="s">② 每块向量化</span>→<span class="s">③ 问题向量化</span>→<span class="s">④ 余弦相似度排序</span>→<span class="s">⑤ 取 top-k 拼进 prompt</span>→<span class="s">⑥ LLM 生成</span></div>
+  <p class="hint">知识库是一家虚构的“星河咖啡”的内部手册（模型不可能事先知道）。为了能在浏览器里运行，"向量化"用的是字符 n-gram 的 TF-IDF —— 真实系统会用神经网络 embedding 模型，能理解同义词，但流程完全一样。</p>
+  <div class="row">
+    <input type="text" id="q" value="会员积分可以换什么？" style="flex:1;min-width:240px">
+    <button data-q="晚上几点关门？">晚上几点关门？</button><button data-q="买错了能退吗">买错了能退吗</button><button data-q="外卖送多远">外卖送多远</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <span class="knob">块大小 <input type="range" id="cs" min="20" max="160" step="10" value="60"> <b class="mono" id="csv"></b> 字</span>
+    <span class="knob">重叠 <input type="range" id="ov" min="0" max="30" step="5" value="10"> <b class="mono" id="ovv"></b> 字</span>
+    <span class="knob">top-k <input type="range" id="k" min="1" max="5" value="2"> <b class="mono" id="kv"></b></span>
+  </div>
+  <div class="grid2">
+    <div><h3 id="chTitle"></h3><div id="chunks" style="max-height:520px;overflow:auto"></div></div>
+    <div>
+      <h3>向量空间（PCA 投影到 2 维）· 橙 = 检索到的块，★ = 问题</h3>
+      <svg id="map" viewBox="0 0 420 300" style="width:100%;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></svg>
+      <h3 style="margin-top:14px">⑤ 最终发给 LLM 的 prompt</h3>
+      <div class="pr" id="prompt"></div>
+    </div>
+  </div>
+  <div class="callout">调一下"块大小"：块太小，答案被切碎、缺上下文；块太大，一块里混了很多无关内容，相似度被稀释，还浪费上下文。"重叠"让跨越边界的句子不至于被切断。这些参数在真实项目里需要根据数据反复调。</div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>RAG 常见的坑与改进</h2>
+  <div class="grid3">
+    <div class="box"><h3>检索不到</h3><p style="font-size:14px">用户说“几点打烊”，文档写“营业时间”。关键词匹配会失败 —— 所以要用语义 embedding；还可以让 LLM 先<b>改写问题</b>，或生成一个“假想答案”再去检索（HyDE）。</p></div>
+    <div class="box"><h3>检索到但排序不准</h3><p style="font-size:14px">先用快速的向量检索召回 50 条，再用更精确的<b>重排模型</b>（cross-encoder）挑出 top 5。也常和关键词检索（BM25）<b>混合</b>使用。</p></div>
+    <div class="box"><h3>模型不按资料回答</h3><p style="font-size:14px">在 prompt 里明确要求“只依据资料回答，资料里没有就说不知道”，并要求<b>标注引用</b>，便于核查。</p></div>
+  </div>
+</section>
+
+<footer>下一课：Tool Use —— 不只是读资料，让模型去调用计算器、查天气、操作系统。</footer>
+</main>
+
+<script>
+const DOCS = [
+  ['营业时间','星河咖啡所有门店的营业时间为每天早上 7:30 至晚上 22:00。节假日营业时间不变，春节期间除夕下午 16:00 提前闭店，初一至初三正常营业。'],
+  ['会员积分','注册星河会员后，每消费 1 元积 1 分。积分可在小程序中兑换：200 分兑换一杯中杯美式，500 分兑换任意一杯饮品，1000 分兑换星河限定马克杯。积分有效期为 12 个月。'],
+  ['退换政策','饮品制作完成后如口味有问题，可在 30 分钟内凭小票到店免费重做一次。已开封的咖啡豆和周边商品不支持退换；未开封商品 7 天内可凭小票退款。'],
+  ['外卖配送','外卖配送范围为门店周边 3 公里以内，起送价 25 元。配送费 4 元，满 50 元免配送费。高峰时段（11:30-13:30）配送时间约 40 分钟。'],
+  ['新品上市','十一月新品为“桂花燕麦拿铁”，使用燕麦奶和自制桂花酱，限时供应至 12 月底，会员首杯八折。'],
+  ['咖啡豆','星河咖啡的意式拼配豆由 60% 巴西豆和 40% 埃塞俄比亚豆组成，中深烘焙，风味有坚果、可可和柑橘的味道。'],
+  ['员工福利','门店员工每个班次可免费领取一杯饮品，入职满一年可参加咖啡师进阶培训，培训费用由公司承担。'],
+];
+const vis = s => s;
+
+/* ---------- 切块 ---------- */
+function chunkAll(size, ov){
+  const out = [];
+  DOCS.forEach(([title, text]) => {
+    const step = Math.max(5, size - ov);
+    for (let i=0; i<text.length; i+=step){ out.push({title, text: text.slice(i, i+size)}); if (i+size >= text.length) break; }
+  });
+  return out;
+}
+/* ---------- 向量化：字符 1-gram + 2-gram 的 TF-IDF ---------- */
+const STOP = new Set('的了是在和，。、：（）“”0123456789 -'.split(''));
+function grams(s){ const c=[...s].filter(ch=>!STOP.has(ch)), g=[...c]; for(let i=0;i<c.length-1;i++) g.push(c[i]+c[i+1]); return g; }
+function tfidf(texts){
+  const tf = texts.map(t=>{ const m=new Map(); grams(t).forEach(g=>m.set(g,(m.get(g)||0)+1)); return m; });
+  const df = new Map(); tf.forEach(m=>m.forEach((_,g)=>df.set(g,(df.get(g)||0)+1)));
+  const N = texts.length, idf = g => Math.log((N+1)/((df.get(g)||0)+1))+1;
+  const vec = m => { const v=new Map(); let n=0; m.forEach((c,g)=>{ const w=(1+Math.log(c))*idf(g); v.set(g,w); n+=w*w; }); n=Math.sqrt(n)||1; v.forEach((w,g)=>v.set(g,w/n)); return v; };
+  return { vecs: tf.map(vec), embed: t => { const m=new Map(); grams(t).forEach(g=>m.set(g,(m.get(g)||0)+1)); return vec(m); } };
+}
+const cosine = (a,b) => { let s=0; a.forEach((w,g)=>{ if(b.has(g)) s+=w*b.get(g); }); return s; };
+
+/* ---------- PCA（对 Gram 矩阵做幂迭代） ---------- */
+function pca2(vecs){
+  const n = vecs.length, G = vecs.map(a=>vecs.map(b=>cosine(a,b)));
+  const mean = G.map(r=>r.reduce((x,y)=>x+y)/n), tot = mean.reduce((x,y)=>x+y)/n;
+  const C = G.map((r,i)=>r.map((v,j)=>v-mean[i]-mean[j]+tot));      // 双中心化
+  const eig = (M, deflate) => { let v = Array.from({length:n},(_,i)=>Math.sin(i+1+(deflate?3:0)));
+    for (let it=0; it<200; it++){ let w = M.map(r=>dot(r,v)); if (deflate){ const p=dot(w,deflate); w=w.map((x,i)=>x-p*deflate[i]); } const nn=Math.hypot(...w)||1; v=w.map(x=>x/nn); }
+    const lam = dot(M.map(r=>dot(r,v)), v); return [v, Math.max(lam,1e-9)]; };
+  const [v1,l1] = eig(C), [v2,l2] = eig(C, v1);
+  return { pts: vecs.map((_,i)=>[v1[i]*Math.sqrt(l1), v2[i]*Math.sqrt(l2)]), C, v1, v2, l1, l2, mean, tot, G };
+}
+
+function run(){
+  const size=+$('#cs').value, ov=Math.min(+$('#ov').value, size-10), k=+$('#k').value, q=$('#q').value.trim();
+  $('#csv').textContent=size; $('#ovv').textContent=ov; $('#kv').textContent=k;
+  const chunks = chunkAll(size, ov), model = tfidf(chunks.map(c=>c.title+' '+c.text));
+  const qv = model.embed(q), scores = model.vecs.map(v=>cosine(qv,v));
+  const rank = scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).filter(([s],j)=>j<k ? s>0.02 : true), top = rank.filter(([s])=>s>0.02).slice(0,k), hits = new Set(top.map(r=>r[1]));
+  $('#chTitle').textContent = `① 共切成 ${chunks.length} 块 · ④ 与问题的余弦相似度（低于 0.02 的不算命中）`;
+  $('#chunks').innerHTML = chunks.map((c,i)=>`<div class="chunk ${hits.has(i)?'hit':''}"><span class="sc">${scores[i].toFixed(3)}</span><span class="id">#${i} ${c.title}</span>${esc(c.text)}</div>`).join('');
+  // 2D map：块 + 问题（问题按 Gram 投影到同一坐标）
+  const P = pca2(model.vecs), n = chunks.length;
+  const gq = model.vecs.map(v=>cosine(qv,v)), mq = gq.reduce((a,b)=>a+b)/n;
+  const cq = gq.map((g,i)=>g - mq - P.mean[i] + P.tot);
+  const qp = [dot(cq,P.v1)/Math.sqrt(P.l1), dot(cq,P.v2)/Math.sqrt(P.l2)];
+  const all = [...P.pts, qp], xs = all.map(p=>p[0]), ys = all.map(p=>p[1]);
+  const [x0,x1,y0,y1] = [Math.min(...xs),Math.max(...xs),Math.min(...ys),Math.max(...ys)];
+  const sx = x => 25+(x-x0)/((x1-x0)||1)*370, sy = y => 275-(y-y0)/((y1-y0)||1)*250;
+  const titles = [...new Set(DOCS.map(d=>d[0]))], hue = t => titles.indexOf(t)*51;
+  let s = '';
+  top.forEach(([_,i]) => s += `<line x1="${sx(qp[0])}" y1="${sy(qp[1])}" x2="${sx(P.pts[i][0])}" y2="${sy(P.pts[i][1])}" stroke="${cssVar('--accent')}" stroke-dasharray="3 3"/>`);
+  P.pts.forEach((p,i)=> s += `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="${hits.has(i)?8:5}" fill="${hits.has(i)?cssVar('--accent'):`hsl(${hue(chunks[i].title)} 45% 60%)`}" stroke="${cssVar('--card')}"><title>#${i} ${chunks[i].title}</title></circle>`);
+  titles.forEach((t,j)=>{ const idx = chunks.map((c,i)=>c.title===t?i:-1).filter(i=>i>=0); const cx = idx.reduce((a,i)=>a+sx(P.pts[i][0]),0)/idx.length, cy = idx.reduce((a,i)=>a+sy(P.pts[i][1]),0)/idx.length; s += `<text x="${cx}" y="${cy-10}" font-size="11" text-anchor="middle" fill="${cssVar('--muted')}">${t}</text>`; });
+  s += `<text x="${sx(qp[0])}" y="${sy(qp[1])+7}" font-size="22" text-anchor="middle" fill="${cssVar('--accent')}">★</text>`;
+  $('#map').innerHTML = s;
+  // prompt
+  const ctx = top.length ? top.map(([_,i],j)=>`[资料${j+1}]（${chunks[i].title}）${chunks[i].text}`).join('\n') : '（没有检索到相关度足够的资料）';
+  $('#prompt').innerHTML = esc(`你是星河咖啡的客服助手。请只根据下面的资料回答问题，并注明引用了哪条资料。如果资料中没有答案，请回答“抱歉，我没有找到相关信息”。\n\n`) +
+    `<span class="ctx">${esc(ctx)}</span>` + esc(`\n\n问题：${q}\n回答：`);
+}
+['q','cs','ov','k'].forEach(id=>$('#'+id).oninput=run);
+$$('button[data-q]').forEach(b=>b.onclick=()=>{ $('#q').value=b.dataset.q; run(); });
+run();
+</script>
+</body>
+</html>

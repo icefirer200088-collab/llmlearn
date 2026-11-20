@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 11 课 · Tool Use / Function Calling</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  pre{font:12px/1.5 var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:420px;margin:0}
+  .msg pre{max-height:none;border:none;padding:4px 0 0;background:transparent}
+  .tabs button{font-size:13px;padding:5px 10px}
+  .lp{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:13px;margin:10px 0}
+  .lp span.s{padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .lp span.s.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:700}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../10-rag/viz.html">← 10 RAG</a><a href="../../index.html">目录</a><a href="../12-react-agent/viz.html">12 ReAct Agent →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 11</div>
+  <h1>Tool Use：让模型调用外部工具</h1>
+  <p class="lead">LLM 算不准大数乘法、不知道今天的天气、也没法帮你发邮件。但它可以<b>说出</b>"我需要调用某个工具，参数是什么"——由你的程序去执行，再把结果交还给它。模型负责<b>决策</b>，代码负责<b>执行</b>。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>一次完整的工具调用</h2>
+  <p class="hint">选一个问题，然后点"下一步"。左边是对话的样子，右边是真正在 API 里来回传递的 <code>messages</code>。（这里的“模型”是用规则模拟的，为了能离线运行；<code>tool_use.py --real</code> 可以接真实的 Claude API。）</p>
+  <div class="row">
+    <button data-q="1234 × 5678 等于多少？" class="on">1234 × 5678 等于多少？</button>
+    <button data-q="上海今天天气怎么样？">上海今天天气怎么样？</button>
+    <button data-q="北京和广州今天哪里更热？">北京和广州今天哪里更热？</button>
+    <button data-q="你好，介绍一下你自己">你好，介绍一下你自己</button>
+  </div>
+  <div class="lp" id="lp"><span class="s" data-k="user">① 用户提问</span>→<span class="s" data-k="call">② 模型决定调用工具</span>→<span class="s" data-k="exec">③ 你的代码执行工具</span>→<span class="s" data-k="result">④ 结果返回给模型</span>→<span class="s" data-k="final">⑤ 模型给出最终回答</span></div>
+  <div class="row"><button class="primary" id="next">下一步 →</button><button id="all">播放全部</button><button id="rst">重置</button></div>
+  <div class="grid2">
+    <div id="chat"></div>
+    <div><h3>API 中的 messages（JSON）</h3><pre id="raw"></pre></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>工具是怎么"告诉"模型的？</h2>
+  <p class="hint">每个工具用 <b>名字 + 描述 + JSON Schema</b> 定义参数。这些定义会被放进 prompt 里。模型在训练中学会了：需要时，输出一个特定格式的结构化调用。<b>描述写得好不好，直接决定模型会不会在对的时候调用对的工具。</b></p>
+  <div class="row tabs" id="ttabs"></div>
+  <pre id="tdef" style="margin-top:8px"></pre>
+</section>
+
+<footer>下一课：ReAct Agent —— 让模型自己决定多次调用工具、一步步完成任务。</footer>
+</main>
+
+<script>
+/* ---------- 工具定义 ---------- */
+const TOOLS = [
+  {name:'calculator', description:'计算一个数学表达式的精确结果。支持 + - * / 和括号。遇到任何需要精确计算的数字运算时都应使用此工具，不要心算。',
+   input_schema:{type:'object', properties:{expression:{type:'string', description:'要计算的表达式，例如 "1234 * 5678"'}}, required:['expression']}},
+  {name:'get_weather', description:'查询某个城市今天的天气，返回天气状况和温度（摄氏度）。',
+   input_schema:{type:'object', properties:{city:{type:'string', description:'城市名，例如 "上海"'}}, required:['city']}},
+];
+const WEATHER = {'上海':{cond:'多云',temp:18},'北京':{cond:'晴',temp:9},'广州':{cond:'小雨',temp:24},'深圳':{cond:'阴',temp:23}};
+const EXEC = {
+  calculator: ({expression}) => { if (!/^[\d\s+\-*/().]+$/.test(expression)) return {error:'非法表达式'}; return {result: Function(`"use strict";return (${expression})`)()}; },
+  get_weather: ({city}) => WEATHER[city] ? {city, ...WEATHER[city]} : {error:`没有 ${city} 的数据`},
+};
+
+/* ---------- 规则模拟的"模型" ---------- */
+function fakeModel(messages){
+  const last = messages[messages.length-1];
+  const userQ = messages[0].content;
+  if (last.role === 'user' && typeof last.content === 'string'){
+    const m = userQ.replace(/×/g,'*').match(/[\d\s+\-*/().]{3,}/);
+    if (m && /\d\s*[*+\-/]\s*\d/.test(m[0])) return {text:'这需要精确计算，我来调用计算器。', calls:[{name:'calculator', input:{expression:m[0].trim()}}]};
+    const cities = Object.keys(WEATHER).filter(c=>userQ.includes(c));
+    if (/天气|热|冷|温度/.test(userQ) && cities.length) return {text: cities.length>1?`我需要分别查询 ${cities.join('和')} 的天气。`:`我来查一下${cities[0]}的天气。`, calls: cities.map(c=>({name:'get_weather', input:{city:c}}))};
+    return {text:'你好！我是一个演示用的助手，可以帮你做精确计算、查询天气。不需要工具的问题我会直接回答。', calls:[]};
+  }
+  // 收到工具结果后，生成最终回答
+  const results = last.content.map(b=>JSON.parse(b.content));
+  if (results[0].result !== undefined) return {text:`计算结果是 ${results[0].result.toLocaleString()}。`, calls:[]};
+  if (results.length > 1){ const s = [...results].sort((a,b)=>b.temp-a.temp); return {text:`${results.map(r=>`${r.city}今天${r.cond}，${r.temp}°C`).join('；')}。所以${s[0].city}更热，比${s[1].city}高 ${s[0].temp-s[1].temp}°C。`, calls:[]}; }
+  const r = results[0]; return {text:`${r.city}今天${r.cond}，气温 ${r.temp}°C。${r.temp<12?'有点冷，记得多穿点。':'温度挺舒适的。'}`, calls:[]};
+}
+
+/* ---------- 单步推进 ---------- */
+let q, msgs, phase, chat, idc;
+function reset(){
+  q = $('button[data-q].on').dataset.q; msgs = []; chat = []; phase = 0; idc = 1;
+  render();
+}
+function step(){
+  if (phase === 0){ msgs.push({role:'user', content:q}); chat.push({who:'user', html:esc(q)}); phase = 1; hl('user'); }
+  else if (phase === 1){
+    const r = fakeModel(msgs);
+    const content = [{type:'text', text:r.text}, ...r.calls.map(c=>({type:'tool_use', id:'toolu_0'+(idc++), name:c.name, input:c.input}))];
+    msgs.push({role:'assistant', content});
+    chat.push({who:'assistant', html: esc(r.text) + r.calls.map(c=>`<pre>🔧 ${c.name}(${esc(JSON.stringify(c.input,null,0))})</pre>`).join('')});
+    phase = r.calls.length ? 2 : 9; hl(r.calls.length ? 'call' : 'final');
+  }
+  else if (phase === 2){
+    const calls = msgs[msgs.length-1].content.filter(b=>b.type==='tool_use');
+    const res = calls.map(c=>({type:'tool_result', tool_use_id:c.id, content: JSON.stringify(EXEC[c.name](c.input))}));
+    chat.push({who:'tool', html: res.map((r,i)=>`<pre>${calls[i].name} → ${esc(r.content)}</pre>`).join('') + '<span class="hint">这一步发生在你的程序里，不是模型里。</span>'});
+    msgs.push({role:'user', content:res}); phase = 3; hl('exec');
+  }
+  else if (phase === 3){ phase = 4; hl('result'); chat.push({who:'sys', html:'把 tool_result 作为一条新消息追加到 messages，再次调用模型 API。'}); }
+  else if (phase === 4){
+    const r = fakeModel(msgs);
+    msgs.push({role:'assistant', content:[{type:'text', text:r.text}]});
+    chat.push({who:'assistant', html:esc(r.text)}); phase = 9; hl('final');
+  }
+  render();
+}
+function hl(k){ $$('#lp .s').forEach(s=>s.classList.toggle('on', s.dataset.k===k)); }
+function render(){
+  $('#chat').innerHTML = chat.map((c,i)=> c.who==='sys' ? `<p class="hint" style="margin:6px 4px">↻ ${c.html}</p>` :
+    `<div class="msg ${c.who} ${i===chat.length-1?'new':''}"><div class="who">${{user:'用户',assistant:'模型',tool:'工具执行'}[c.who]}</div>${c.html}</div>`).join('') || '<p class="hint">点“下一步”开始。</p>';
+  $('#raw').textContent = JSON.stringify({tools: TOOLS.map(t=>t.name+' …'), messages: msgs}, null, 2);
+  $('#next').disabled = phase === 9;
+  if (phase === 0) hl('');
+}
+$('#next').onclick = step;
+$('#all').onclick = async ()=>{ reset(); while (phase !== 9){ step(); await sleep(700); } };
+$('#rst').onclick = reset;
+$$('button[data-q]').forEach(b=>b.onclick=()=>{ $$('button[data-q]').forEach(x=>x.classList.remove('on')); b.classList.add('on'); reset(); });
+
+/* ---------- 工具定义展示 ---------- */
+let tsel = 0;
+function drawTools(){
+  $('#ttabs').innerHTML = TOOLS.map((t,i)=>`<button class="${i===tsel?'on':''}" data-i="${i}">${t.name}</button>`).join('');
+  $$('#ttabs button').forEach(b=>b.onclick=()=>{ tsel=+b.dataset.i; drawTools(); });
+  $('#tdef').textContent = JSON.stringify(TOOLS[tsel], null, 2);
+}
+reset(); drawTools();
+</script>
+</body>
+</html>

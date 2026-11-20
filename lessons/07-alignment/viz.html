@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 07 课 · 预训练 → SFT → RLHF / DPO</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .stages{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  @media(max-width:780px){.stages{grid-template-columns:1fr}}
+  .stage{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer;background:var(--bg)}
+  .stage.on{border-color:var(--accent);background:var(--accent-soft)}
+  .stage b{display:block;font-size:16px} .stage small{color:var(--muted);font-size:13px}
+  .tk{display:inline-block;font:13px var(--mono);padding:2px 4px;margin:1px;border-radius:4px;border:1px solid var(--line)}
+  .tk.loss{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .tk.sys{color:var(--muted)} .tk.loss.sys{color:#fff}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .resp{font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;background:var(--bg)}
+  .resp b{font-family:var(--mono);color:var(--accent);margin-right:6px}
+  .big{font:700 28px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../06-sampling/viz.html">← 06 采样与生成</a><a href="../../index.html">目录</a><a href="../08-scaling-inference/viz.html">08 Scaling 与推理 →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 07</div>
+  <h1>从"续写机器"到"助手"：预训练 → SFT → RLHF / DPO</h1>
+  <p class="lead">第 05 课训练出的模型只会<b>续写</b>：你问它问题，它可能接着编出更多问题。要让它变成一个有用、诚实、无害的助手，还需要两步：<b>指令微调（SFT）</b>和<b>偏好对齐（RLHF / DPO）</b>。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>三个阶段，同一个问题</h2>
+  <p class="hint">点击每个阶段，看模型对同一个 prompt 的典型反应（示意）。</p>
+  <div class="stages" id="stages"></div>
+  <div class="grid2">
+    <div class="box"><h3>Prompt</h3><p style="font-size:15px;margin:0">怎么才能学好英语？</p><h3 style="margin-top:14px">模型输出</h3><div id="stOut" style="font-size:14px;white-space:pre-wrap"></div></div>
+    <div class="box" id="stInfo" style="font-size:14px"></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>SFT：用"对话格式"的数据继续训练</h2>
+  <p class="hint">数据是人写的（或强模型生成后人工筛选的）"指令 → 优质回答"。训练方法和预训练完全相同（预测下一个 token），只有一点区别：<b>只在助手回复的 token 上算 loss</b>（橙色），用户的话和格式标记只作为上下文。</p>
+  <div class="row"><label class="knob"><input type="checkbox" id="maskAll"> 对所有 token 都算 loss（错误做法：模型会学着模仿用户提问）</label></div>
+  <div class="box" id="sft" style="line-height:2.1"></div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>奖励模型：从"哪个更好"学出一个分数</h2>
+  <p class="hint">让人比较两个回答，比"给回答打绝对分"容易得多也一致得多。Bradley-Terry 模型假设：<code>P(A 优于 B) = σ(r(A) − r(B))</code>。用大量人类比较数据训练一个打分模型 r。拖动滑块感受分差和偏好概率的关系。</p>
+  <div class="grid2">
+    <div>
+      <div class="knob">r(A) − r(B) <input type="range" id="rd" min="-6" max="6" step="0.1" value="1"> <b class="mono" id="rdv"></b></div>
+      <p>P(人类更喜欢 A) = <span class="big" id="pa"></span></p>
+    </div>
+    <svg id="sig" viewBox="0 0 420 180" style="width:100%"></svg>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>DPO：直接用偏好数据优化模型（现场训练）</h2>
+  <p class="hint">Prompt："我今天心情很差。" 模型（策略 π）可能给出下面 4 种回答。人类标注了 6 组偏好。DPO 的损失：<code>−log σ(β·[(log π(好) − log π<sub>ref</sub>(好)) − (log π(差) − log π<sub>ref</sub>(差))])</code> —— 把好回答的概率相对参考模型<b>往上推</b>，差回答<b>往下压</b>，β 控制离参考模型能走多远。</p>
+  <div class="grid2">
+    <div>
+      <div id="resps"></div>
+      <h3 style="margin-top:12px">人类偏好（好 ≻ 差）</h3>
+      <div class="mono" style="font-size:13px" id="prefs"></div>
+    </div>
+    <div>
+      <div class="row"><button class="primary" id="dGo">▶ 训练</button><button id="dRst">重置</button>
+        <span class="knob">β <input type="range" id="beta" min="0.05" max="2" step="0.05" value="0.5"> <b class="mono" id="betav"></b></span></div>
+      <div class="box" style="margin-top:10px"><h3>策略 π 的概率（灰色细条 = 参考模型 π<sub>ref</sub>）</h3><div id="pol"></div></div>
+      <div class="box" style="margin-top:10px"><h3>DPO loss（橙）与 KL(π‖π<sub>ref</sub>)（蓝）</h3><div id="dCurve"></div><p class="hint" id="dTxt" style="margin:4px 0 0"></p></div>
+    </div>
+  </div>
+  <div class="callout"><b>RLHF（PPO）</b>：先训练奖励模型，再用强化学习让模型生成、打分、更新，同时加 KL 惩罚防止跑偏 —— 需要同时维护 4 个模型，工程复杂。<b>DPO</b> 证明了这个目标有闭式解，可以直接在偏好对上做监督训练，不需要奖励模型和采样，所以迅速流行。</div>
+</section>
+
+<footer>下一课：Scaling 与高效推理 —— 模型为什么越大越好？怎么把大模型塞进显卡？</footer>
+</main>
+
+<script>
+/* ---------- 01 三阶段 ---------- */
+const STAGES = [
+  {name:'① 预训练', sub:'万亿 token · 预测下一个词', out:`怎么才能学好口语？
+怎么才能提高听力？
+英语四级多少分算过？
+【相关问题】更多学习技巧请关注本站……`,
+   info:`<b>数据</b>：网页、书籍、代码、论文……万亿级 token。<br><b>目标</b>：预测下一个 token（第 05 课）。<br><b>结果</b>：“基座模型”，学到了语言、知识和推理能力，但它以为自己在续写一个网页 —— 问答网站上一个问题后面常常跟着更多问题。<br><b>成本</b>：占全部训练算力的 95% 以上。`},
+  {name:'② 指令微调 SFT', sub:'几万~几十万条对话', out:`学好英语可以从以下几方面入手：
+1. 每天坚持听力输入，比如播客、美剧；
+2. 积累高频词汇，用间隔重复法记忆；
+3. 大胆开口，找语伴或跟读练习；
+4. 多读多写，从简单的原版书开始。`,
+   info:`<b>数据</b>：人工撰写的“指令 → 优质回答”。<br><b>目标</b>：仍是预测下一个 token，但只在回答部分算 loss。<br><b>结果</b>：学会了<b>对话格式</b>和“该回答问题”。知识基本来自预训练，SFT 主要教“怎么说”。<br><b>问题</b>：只会模仿示范，不知道哪个回答<b>更好</b>；示范数据写得再好也有上限。`},
+  {name:'③ 偏好对齐 RLHF/DPO', sub:'人类比较“哪个更好”', out:`可以先想想你学英语主要是为了什么——考试、工作还是旅行？目标不同，侧重点也不同。
+
+通用的建议是：
+· 输入为主：每天 30 分钟你感兴趣的内容（剧、播客、YouTube）
+· 主动输出：用新学的表达写几句日记或跟读
+· 保持节奏：比起偶尔突击，小量每天坚持效果好得多
+
+如果你告诉我你的水平和目标，我可以帮你定一个具体计划。`,
+   info:`<b>数据</b>：同一个问题的多个回答，人类标注哪个更好。<br><b>目标</b>：提高“好回答”的概率，降低“差回答”的概率。<br><b>结果</b>：更有用、更诚实、更安全，会追问、会拒绝不当请求。<br><b>变种</b>：RLHF（PPO）、DPO、RLAIF / Constitutional AI（用 AI 按一套原则打标）、以及面向推理的 RL（用可验证的答案作为奖励）。`},
+];
+let st = 0;
+function drawStages(){
+  $('#stages').innerHTML = STAGES.map((s,i)=>`<div class="stage ${i===st?'on':''}" data-i="${i}"><b>${s.name}</b><small>${s.sub}</small></div>`).join('');
+  $$('.stage').forEach(e=>e.onclick=()=>{ st=+e.dataset.i; drawStages(); });
+  $('#stOut').textContent = STAGES[st].out; $('#stInfo').innerHTML = STAGES[st].info;
+}
+
+/* ---------- 02 SFT loss mask ---------- */
+const CHAT = [
+  ['sys','<|system|>'],['sys','你是一个乐于助人的助手。'],['sys','<|user|>'],
+  ['u','把'],['u','“'],['u','hello'],['u','”'],['u','翻译'],['u','成'],['u','中文'],['sys','<|assistant|>'],
+  ['a','“'],['a','hello'],['a','”'],['a','的'],['a','意思'],['a','是'],['a','“'],['a','你好'],['a','”'],['a','。'],['a','<|end|>'],
+];
+function drawSFT(){
+  const all = $('#maskAll').checked;
+  $('#sft').innerHTML = CHAT.map(([r,t])=>`<span class="tk ${all||r==='a'?'loss':''} ${r==='sys'?'sys':''}">${esc(t)}</span>`).join('') +
+    `<p class="hint" style="margin:8px 0 0">参与 loss 的 token：${CHAT.filter(([r])=>all||r==='a').length} / ${CHAT.length}。注意 <code>&lt;|end|&gt;</code> 也要学 —— 模型得学会<b>什么时候停下</b>。</p>`;
+}
+$('#maskAll').oninput = drawSFT;
+
+/* ---------- 03 Bradley-Terry ---------- */
+const sigm = x => 1/(1+Math.exp(-x));
+function drawBT(){
+  const d = +$('#rd').value; $('#rdv').textContent = d.toFixed(1); $('#pa').textContent = (sigm(d)*100).toFixed(1)+'%';
+  const w=420,h=180, px=x=>30+(x+6)/12*(w-45), py=y=>h-25-y*(h-40);
+  let s = `<line x1="30" y1="${py(0)}" x2="${w-10}" y2="${py(0)}" stroke="${cssVar('--line')}"/><line x1="${px(0)}" y1="10" x2="${px(0)}" y2="${h-25}" stroke="${cssVar('--line')}"/><line x1="30" y1="${py(.5)}" x2="${w-10}" y2="${py(.5)}" stroke="${cssVar('--line')}" stroke-dasharray="3 3"/>`;
+  s += `<path d="${Array.from({length:121},(_,i)=>{const x=-6+i*.1;return `${i?'L':'M'}${px(x).toFixed(1)} ${py(sigm(x)).toFixed(1)}`;}).join(' ')}" fill="none" stroke="${cssVar('--accent')}" stroke-width="2.5"/>`;
+  s += `<circle cx="${px(d)}" cy="${py(sigm(d))}" r="6" fill="${cssVar('--accent')}"/><text x="${w-10}" y="${h-6}" text-anchor="end" font-size="11" fill="${cssVar('--muted')}">r(A) − r(B)</text>`;
+  $('#sig').innerHTML = s;
+}
+$('#rd').oninput = drawBT;
+
+/* ---------- 04 DPO ---------- */
+const RESP = [
+  {k:'A', t:'听起来今天挺不容易的。愿意说说发生了什么吗？我在听。'},
+  {k:'B', t:'心情不好的时候可以试试运动、听音乐或者早点睡觉。'},
+  {k:'C', t:'哦。'},
+  {k:'D', t:'研究表明 97% 的坏心情会在 3 分钟内自动消失，所以不用管它。'},
+];
+const PREFS = [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
+const REF = [0.15, 0.40, 0.25, 0.20];
+let th, hist, dTimer, dit;
+const logp = t => { const p = softmax(t); return p.map(Math.log); };
+function dReset(){ th = REF.map(Math.log); hist={loss:[],kl:[]}; dit=0; dStop(); dDraw(); }
+function dStep(){
+  const beta = +$('#beta').value, lr = 0.5, lpr = REF.map(Math.log);
+  const lp = logp(th), g = [0,0,0,0]; let loss = 0;
+  for (const [w,l] of PREFS){
+    const z = beta*((lp[w]-lpr[w]) - (lp[l]-lpr[l]));
+    loss += -Math.log(sigm(z));
+    const c = -(1-sigm(z))*beta;           // dL/dz · dz/d(logπ)
+    const p = softmax(th);
+    for (let i=0;i<4;i++) g[i] += c*(((i===w)-p[i]) - ((i===l)-p[i])) / PREFS.length;
+  }
+  for (let i=0;i<4;i++) th[i] -= lr*g[i];
+  const p = softmax(th);
+  hist.loss.push(loss/PREFS.length); hist.kl.push(p.reduce((s,v,i)=>s+v*Math.log(v/REF[i]),0)); dit++;
+}
+function dDraw(){
+  $('#betav').textContent = (+$('#beta').value).toFixed(2);
+  const p = softmax(th);
+  $('#pol').innerHTML = RESP.map((r,i)=>`<div class="bar"><span>回答 ${r.k}</span><div class="track" style="position:relative"><div class="fill" style="width:${p[i]*100}%"></div><div style="position:absolute;left:0;bottom:0;height:3px;width:${REF[i]*100}%;background:var(--muted)"></div></div><span>${(p[i]*100).toFixed(1)}%</span></div>`).join('');
+  lineChart($('#dCurve'), [{data: hist.loss.length>1?hist.loss:[Math.log(2),Math.log(2)], name:'DPO loss'}, {data: hist.kl.length>1?hist.kl:[0,0], name:'KL'}], {ymin:0, h:170, xlabel:'步数'});
+  $('#dTxt').textContent = `第 ${dit} 步。理论上 β 越大，最优策略离参考模型越近（KL 约束越强）。但这个玩具例子里偏好完全一致、没有矛盾，DPO 会一直把好回答往上推，β 主要影响速度；真实数据有噪声和矛盾，β 的约束作用才明显。改 β 后点“重置”对比。`;
+}
+function dStop(){ clearInterval(dTimer); dTimer=null; $('#dGo').textContent='▶ 训练'; }
+$('#dGo').onclick = ()=>{ if(dTimer) return dStop(); $('#dGo').textContent='⏸ 暂停'; dTimer=setInterval(()=>{ dStep(); dDraw(); if(dit>=300) dStop(); }, 30); };
+$('#dRst').onclick = dReset; $('#beta').oninput = dDraw;
+$('#resps').innerHTML = RESP.map(r=>`<div class="resp"><b>${r.k}</b>${r.t}</div>`).join('');
+$('#prefs').innerHTML = PREFS.map(([w,l])=>`${RESP[w].k} ≻ ${RESP[l].k}`).join('　');
+
+drawStages(); drawSFT(); drawBT(); dReset();
+</script>
+</body>
+</html>

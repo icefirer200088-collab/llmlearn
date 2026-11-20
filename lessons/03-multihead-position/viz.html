@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 03 课 · 多头注意力与位置编码</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  canvas{width:100%;image-rendering:pixelated;border-radius:6px;border:1px solid var(--line)}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .big{font:700 30px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../02-self-attention/viz.html">← 02 Self-Attention</a><a href="../../index.html">目录</a><a href="../04-transformer-block/viz.html">04 Transformer Block →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 03</div>
+  <h1>多头注意力与位置编码</h1>
+  <p class="lead">上一课的 Self-Attention 有两个问题：① 它<b>不知道词的顺序</b>；② 一组 Q/K/V 只能学一种"关注方式"。本课分别用<b>位置编码</b>和<b>多头</b>解决。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>问题：没有位置信息，"狗咬人" = "人咬狗"</h2>
+  <p class="hint">对两个句子分别做 Self-Attention，比较"狗"这个 token 输出向量的余弦相似度。不加位置编码时，打乱顺序只是把行换了位置，每个 token 的输出<b>完全一样</b>。</p>
+  <div class="row"><label class="knob"><input type="checkbox" id="pe1"> 加上位置编码</label></div>
+  <div class="grid2">
+    <div class="box"><h3>句子 A：狗 咬 人 · 注意力矩阵</h3><div id="ordA"></div></div>
+    <div class="box"><h3>句子 B：人 咬 狗 · 注意力矩阵</h3><div id="ordB"></div></div>
+  </div>
+  <p style="margin-top:12px">cos(“狗”在 A 的输出, “狗”在 B 的输出) = <span class="big" id="ordCos"></span> <span id="ordTxt" class="hint"></span></p>
+</section>
+
+<section>
+  <h2><span class="n">02</span>正弦位置编码（原版 Transformer）</h2>
+  <p class="hint">给每个位置 pos 造一个 d 维向量，直接<b>加</b>到 embedding 上：<code>PE[pos, 2i] = sin(pos / 10000^(2i/d))</code>，<code>PE[pos, 2i+1] = cos(...)</code>。低维转得快（像秒针），高维转得慢（像时针）—— 像一个多指针的时钟，每个位置都有独一无二的"时刻"。</p>
+  <div class="grid2">
+    <div>
+      <h3>PE 矩阵（行 = 位置 0~63，列 = 维度 0~63）· 鼠标移上去看某一行</h3>
+      <canvas id="peCan" width="64" height="64" style="max-width:400px"></canvas>
+    </div>
+    <div>
+      <h3>位置 <span id="posv" class="mono">10</span> 的编码向量</h3>
+      <svg id="peLine" viewBox="0 0 460 160" style="width:100%"></svg>
+      <div class="knob">位置 <input type="range" id="pos" min="0" max="63" value="10"></div>
+      <h3 style="margin-top:10px">位置之间的相似度 PE·PEᵀ（越近越像，且只和距离有关）</h3>
+      <canvas id="simCan" width="64" height="64" style="max-width:260px"></canvas>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>RoPE：用"旋转"表示位置（Llama、Qwen 等现代模型）</h2>
+  <p class="hint">不再把位置"加"到向量上，而是把 q、k 按位置<b>旋转</b>一个角度：位置 m 转 mθ。两个向量旋转后的点积只取决于<b>夹角之差 (m−n)θ</b>，即<b>相对距离</b>。拖动滑块，或点"同时右移"看看点积变不变。</p>
+  <div class="grid2">
+    <svg id="rope" viewBox="0 0 320 320" style="width:100%;max-width:340px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></svg>
+    <div>
+      <div class="knob">query 位置 m <input type="range" id="m" min="0" max="20" value="5"> <b class="mono" id="mv"></b></div>
+      <div class="knob">key 位置 n <input type="range" id="n" min="0" max="20" value="2"> <b class="mono" id="nv"></b></div>
+      <div class="knob">θ（每步旋转角） <input type="range" id="th" min="5" max="40" value="15"> <b class="mono" id="thv"></b></div>
+      <div class="row" style="margin:10px 0"><button id="shift">同时右移 +1</button><button id="shiftb">同时左移 −1</button></div>
+      <p>相对距离 m − n = <b class="mono" id="rel"></b></p>
+      <p>旋转后点积 R<sub>m</sub>q · R<sub>n</sub>k = <span class="big" id="rdot"></span></p>
+      <div class="callout">真实的 RoPE 把 d 维向量切成 d/2 对，每对用不同的 θ<sub>i</sub> 旋转（和正弦编码一样，快慢不同的"指针"）。</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>多头注意力：多个"视角"同时看</h2>
+  <p class="hint">把 d_model 维切成 h 份，每个 head 有自己的 W<sub>Q</sub>/W<sub>K</sub>/W<sub>V</sub>，各自算注意力，最后拼接再乘 W<sub>O</sub>。下面是研究者在真实模型里常观察到的几种 head（示意数据）。</p>
+  <div class="row" id="heads"></div>
+  <div class="grid2">
+    <div class="box"><h3 id="hTitle"></h3><div id="hMap" style="overflow-x:auto"></div><p class="hint" id="hDesc" style="margin-top:8px"></p></div>
+    <div class="box">
+      <h3>多头的数据流（d_model = 512，h = 8）</h3>
+      <svg id="mhFlow" viewBox="0 0 440 270" style="width:100%"></svg>
+    </div>
+  </div>
+</section>
+
+<footer>下一课：Transformer Block —— 把注意力、FFN、残差、LayerNorm 拼成一个完整的层。</footer>
+</main>
+
+<script>
+/* ---------- 位置编码 ---------- */
+const D = 64;
+const PE = (pos, d=D) => Array.from({length:d}, (_,j) => { const i = Math.floor(j/2), f = pos / 10000 ** (2*i/d); return j%2 ? Math.cos(f) : Math.sin(f); });
+const PEM = Array.from({length:64}, (_,p) => PE(p));
+
+/* ---------- 01 顺序问题 ---------- */
+function embedTok(t){ let h=3; for(const c of t) h=h*131+c.codePointAt(0); const R=rng(h); return Array.from({length:16},()=>R.normal()); }
+function attnOut(toks, usePE){
+  const R = rng(7), d = 16;
+  const X = toks.map((t,i)=> { const e = embedTok(t); return usePE ? e.map((v,j)=>v+1.5*PE(i,d)[j]) : e; });
+  const Wq=randMat(d,d,R,.25), Wk=randMat(d,d,R,.25), Wv=randMat(d,d,R,.25);
+  const Q=matmul(X,Wq), K=matmul(X,Wk), V=matmul(X,Wv);
+  const A = matmul(Q,T(K)).map(r=>softmax(r.map(v=>v/4)));
+  return {A, Z: matmul(A,V)};
+}
+function order(){
+  const pe = $('#pe1').checked, a=['狗','咬','人'], b=['人','咬','狗'];
+  const ra = attnOut(a,pe), rb = attnOut(b,pe);
+  heatmap($('#ordA'), ra.A, {rows:a, cols:a, diverging:false, max:1});
+  heatmap($('#ordB'), rb.A, {rows:b, cols:b, diverging:false, max:1});
+  const za = ra.Z[0], zb = rb.Z[2];
+  const c = dot(za,zb)/Math.sqrt(dot(za,za)*dot(zb,zb));
+  $('#ordCos').textContent = c.toFixed(4);
+  $('#ordTxt').textContent = c > 0.9999 ? '完全相同 —— 模型分不清谁咬谁！' : '不同了 —— 模型现在能区分“主语的狗”和“宾语的狗”。';
+}
+$('#pe1').oninput = order;
+
+/* ---------- 02 正弦编码 ---------- */
+function paint(can, M, max, diverging=true){
+  const ctx = can.getContext('2d'), img = ctx.createImageData(M[0].length, M.length);
+  M.forEach((r,y)=>r.forEach((v,x)=>{
+    const a = Math.min(1, Math.abs(v)/max), k=(y*M[0].length+x)*4, pos = v>=0 || !diverging;
+    const bg = isDark()?[23,21,15]:[247,245,240], c = pos?[194,65,12]:[29,78,216];
+    for(let ch=0;ch<3;ch++) img.data[k+ch] = bg[ch]*(1-a)+c[ch]*a; img.data[k+3]=255;
+  }));
+  ctx.putImageData(img,0,0);
+}
+function drawPE(){
+  const p = +$('#pos').value; $('#posv').textContent = p;
+  paint($('#peCan'), PEM.map((r,i)=> i===p ? r.map(()=>0) : r), 1);
+  const v = PEM[p], w=460, h=160;
+  let s = `<line x1="0" y1="80" x2="${w}" y2="80" stroke="${cssVar('--line')}"/>`;
+  s += v.map((x,j)=>`<rect x="${j*w/64+1}" y="${x>=0?80-x*70:80}" width="${w/64-2}" height="${Math.abs(x)*70}" fill="${x>=0?cssVar('--accent'):cssVar('--blue')}"/>`).join('');
+  s += `<text x="4" y="154" font-size="11" fill="${cssVar('--muted')}">维度 0（变化快）</text><text x="${w-4}" y="154" font-size="11" text-anchor="end" fill="${cssVar('--muted')}">维度 63（变化慢）</text>`;
+  $('#peLine').innerHTML = s;
+}
+$('#pos').oninput = drawPE;
+$('#peCan').onmousemove = e => { const r = e.target.getBoundingClientRect(); $('#pos').value = Math.floor((e.clientY-r.top)/r.height*64); drawPE(); };
+paint($('#simCan'), PEM.map(a=>PEM.map(b=>dot(a,b))), 32, false);
+
+/* ---------- 03 RoPE ---------- */
+const q0 = [0.9, 0.35], k0 = [0.6, 0.75];
+const rot = (v,a) => [v[0]*Math.cos(a)-v[1]*Math.sin(a), v[0]*Math.sin(a)+v[1]*Math.cos(a)];
+function drawRope(){
+  const m=+$('#m').value, n=+$('#n').value, th=+$('#th').value*Math.PI/180;
+  $('#mv').textContent=m; $('#nv').textContent=n; $('#thv').textContent=$('#th').value+'°'; $('#rel').textContent=m-n;
+  const q = rot(q0, m*th), k = rot(k0, n*th);
+  $('#rdot').textContent = dot(q,k).toFixed(4);
+  const C=160, R=120, acc=cssVar('--accent'), blue=cssVar('--blue'), mut=cssVar('--muted');
+  let s = `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="${cssVar('--line')}"/>
+  <defs>${[['a',acc],['b',blue]].map(([id,c])=>`<marker id="${id}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="${c}"/></marker>`).join('')}</defs>`;
+  const arrow = (v,c,id,lab,dash) => `<line x1="${C}" y1="${C}" x2="${C+v[0]*R}" y2="${C-v[1]*R}" stroke="${c}" stroke-width="${dash?1.5:3}" ${dash?'stroke-dasharray="4 3" stroke-opacity=".5"':''} marker-end="url(#${id})"/><text x="${C+v[0]*(R+14)}" y="${C-v[1]*(R+14)+4}" font-size="13" text-anchor="middle" fill="${c}">${lab}</text>`;
+  s += arrow(q0,acc,'a','q',1) + arrow(k0,blue,'b','k',1) + arrow(q,acc,'a',`R${m}q`) + arrow(k,blue,'b',`R${n}k`);
+  $('#rope').innerHTML = s;
+}
+['m','n','th'].forEach(id=>$('#'+id).oninput=drawRope);
+$('#shift').onclick = ()=>{ if(+$('#m').value<20 && +$('#n').value<20){ $('#m').value++; $('#n').value++; drawRope(); } };
+$('#shiftb').onclick = ()=>{ if(+$('#m').value>0 && +$('#n').value>0){ $('#m').value--; $('#n').value--; drawRope(); } };
+
+/* ---------- 04 多头 ---------- */
+const toks = ['小明','把','书','给','了','他','的','同学'];
+const N = toks.length;
+const mk = f => Array.from({length:N},(_,i)=>{ const r = Array.from({length:N},(_,j)=> j>i?0:f(i,j)); const s=r.reduce((a,b)=>a+b,0)||1; return r.map(v=>v/s); });
+const HEADS = [
+  {name:'Head 1 · 看前一个词', desc:'几乎每个 token 都把注意力放在紧挨着的前一个 token 上。负责局部搭配（“给了”“的同学”）。', A: mk((i,j)=> j===i-1?8:(j===i?1:0.1)) },
+  {name:'Head 2 · 指代关系', desc:'“他”强烈关注“小明”，“同学”关注“他”。负责把代词和它指代的对象联系起来。', A: mk((i,j)=> (i===5&&j===0)?9:(i===7&&j===5)?6:(i===j?1:0.2)) },
+  {name:'Head 3 · 看句首（注意力汇聚）', desc:'大量注意力落在第一个 token 上。这是真实模型中普遍存在的 “attention sink”，相当于“没什么要看的就看这里”。', A: mk((i,j)=> j===0?6:0.5) },
+  {name:'Head 4 · 动词找论元', desc:'“给”关注“小明”（谁给）、“书”（给什么）；“了”关注“给”。负责句法结构。', A: mk((i,j)=> (i===3&&(j===0||j===2))?5:(i===4&&j===3)?6:(i===j?1:0.2)) },
+];
+let hsel = 0;
+function drawHeads(){
+  $('#heads').innerHTML = HEADS.map((h,i)=>`<button class="${i===hsel?'on':''}" data-i="${i}">${h.name.split(' · ')[0]}</button>`).join('');
+  $$('#heads button').forEach(b => b.onclick = () => { hsel=+b.dataset.i; drawHeads(); });
+  const h = HEADS[hsel];
+  $('#hTitle').textContent = h.name; $('#hDesc').textContent = h.desc;
+  heatmap($('#hMap'), h.A, {rows:toks, cols:toks, diverging:false, max:1, fmt:v=>v<.005?'':v.toFixed(2)});
+  // 数据流图
+  const acc=cssVar('--accent'), ink=cssVar('--ink'), mut=cssVar('--muted'), line=cssVar('--line');
+  let s = `<rect x="10" y="115" width="70" height="40" rx="6" fill="none" stroke="${ink}"/><text x="45" y="139" font-size="12" text-anchor="middle" fill="${ink}">X [T×512]</text>`;
+  for(let i=0;i<8;i++){
+    const y = 12+i*31, on = i===hsel;
+    s += `<path d="M80 135 C 110 135, 110 ${y+12}, 130 ${y+12}" fill="none" stroke="${on?acc:line}"/>`;
+    s += `<rect x="130" y="${y}" width="140" height="24" rx="5" fill="${on?cssVar('--accent-soft'):'none'}" stroke="${on?acc:mut}"/><text x="200" y="${y+16}" font-size="11" text-anchor="middle" fill="${on?acc:ink}">head ${i+1}: Attn → [T×64]</text>`;
+    s += `<path d="M270 ${y+12} C 290 ${y+12}, 290 135, 310 135" fill="none" stroke="${on?acc:line}"/>`;
+  }
+  s += `<rect x="310" y="105" width="56" height="60" rx="6" fill="none" stroke="${ink}"/><text x="338" y="132" font-size="11" text-anchor="middle" fill="${ink}">concat</text><text x="338" y="148" font-size="10" text-anchor="middle" fill="${mut}">[T×512]</text>`;
+  s += `<line x1="366" y1="135" x2="380" y2="135" stroke="${ink}"/><rect x="380" y="115" width="52" height="40" rx="6" fill="none" stroke="${ink}"/><text x="406" y="139" font-size="12" text-anchor="middle" fill="${ink}">× W_O</text>`;
+  $('#mhFlow').innerHTML = s;
+}
+
+order(); drawPE(); drawRope(); drawHeads();
+</script>
+</body>
+</html>

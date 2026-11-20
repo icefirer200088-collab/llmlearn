@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 02 课 · Self-Attention</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .pipe{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .pipe .box{overflow-x:auto}
+  @media(max-width:780px){.pipe{grid-template-columns:1fr}}
+  .pipe .box h3{white-space:nowrap}
+  #arcs{width:100%;height:170px}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../01-tokenization-embedding/viz.html">← 01 Tokenization</a><a href="../../index.html">目录</a><a href="../03-multihead-position/viz.html">03 多头 + 位置编码 →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 02</div>
+  <h1>Self-Attention：让每个 token 去"看"其他 token</h1>
+  <p class="lead">第 01 课里每个 token 都拿到了一个向量，但它们互相不知道对方的存在。"苹果"在"吃苹果"和"苹果手机"里应该是不同的意思 —— Self-Attention 就是让每个 token 根据上下文<b>更新自己</b>的机制。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>注意力 = 一次"软"的查字典</h2>
+  <p class="hint">普通字典：拿着 key 精确匹配，取出 <b>一个</b> value。注意力：拿着 <b>query</b> 和所有 <b>key</b> 算相似度（点积），softmax 成权重，把 <b>所有 value</b> 按权重混合。转动下面的 query 方向，看权重如何变化。</p>
+  <div class="grid2">
+    <div>
+      <svg id="dict" viewBox="0 0 320 320" style="width:100%;max-width:340px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></svg>
+      <div class="knob" style="margin-top:8px">query 方向 <input type="range" id="ang" min="0" max="360" value="40"> <span id="angv" class="mono"></span></div>
+      <div class="knob">锐度（1/温度） <input type="range" id="sharp" min="0.2" max="6" step="0.1" value="2"> <span id="sharpv" class="mono"></span></div>
+    </div>
+    <div>
+      <h3>每个 key 的得分 q·k → softmax 权重</h3>
+      <div id="dictBars"></div>
+      <h3 style="margin-top:14px">输出 = Σ 权重 × value（value 是一种颜色）</h3>
+      <div class="row"><div id="mix" style="width:80px;height:50px;border-radius:8px;border:1px solid var(--line)"></div><span class="hint" id="mixTxt" style="margin:0"></span></div>
+      <div class="callout">锐度调高 → 接近"硬"查字典（只取最像的那个）；调低 → 所有 value 平均。Transformer 里这个"锐度"由 <code>1/√d</code> 和向量本身的长度共同决定。</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>完整走一遍 Self-Attention 计算</h2>
+  <p class="hint">输入一句话（用空格分隔 token）。每个 token 的 embedding X 先分别乘三个矩阵得到 Q、K、V，然后 <code>Attention(Q,K,V) = softmax(QKᵀ/√d) · V</code>。<b>点击任意一行</b>，看这个 token 在"看"谁。</p>
+  <div class="row">
+    <input type="text" id="sent" value="小猫 坐 在 垫子 上 因为 它 累 了" style="flex:1;min-width:260px">
+    <label class="knob"><input type="checkbox" id="scale" checked> 除以 √d</label>
+    <label class="knob"><input type="checkbox" id="causal"> 因果掩码（只看前面）</label>
+    <label class="knob">d = <select id="dsel"><option>4</option><option selected>8</option><option>16</option><option>64</option></select></label>
+  </div>
+  <svg id="arcs"></svg>
+  <div class="pipe">
+    <div class="box"><h3>① X（embedding）</h3><div id="mX"></div></div>
+    <div class="box"><h3>② Q = X·W<sub>Q</sub></h3><div id="mQ"></div></div>
+    <div class="box"><h3>K = X·W<sub>K</sub></h3><div id="mK"></div></div>
+    <div class="box"><h3>V = X·W<sub>V</sub></h3><div id="mV"></div></div>
+  </div>
+  <div class="grid2">
+    <div class="box"><h3>③ 打分 S = Q·Kᵀ <span id="scTxt"></span>（行 = query，列 = key）</h3><div id="mS" style="overflow-x:auto"></div></div>
+    <div class="box"><h3>④ A = softmax(S)，每行加起来 = 1</h3><div id="mA" style="overflow-x:auto"></div></div>
+  </div>
+  <div class="box" style="margin-top:16px"><h3>⑤ 输出 Z = A·V：每个 token 的新向量 = 它关注的 token 的 V 的加权平均</h3><div id="mZ" style="overflow-x:auto"></div></div>
+  <div class="callout" id="note"></div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>为什么要除以 √d？</h2>
+  <p class="hint">若 q、k 每一维都是均值 0 方差 1 的随机数，点积 q·k 的方差 = d。d 越大，分数越大，softmax 就越"尖"，梯度几乎为 0。下面随机生成 8 个 key，对比两种做法的 softmax 分布。</p>
+  <div class="row"><span class="knob">维度 d = <input type="range" id="dd" min="1" max="10" value="6"> <b id="ddv" class="mono"></b></span><button id="reroll">换一组随机数</button></div>
+  <div class="grid2">
+    <div class="box"><h3>不缩放：softmax(q·k)</h3><div id="noScale"></div></div>
+    <div class="box"><h3>缩放：softmax(q·k / √d)</h3><div id="withScale"></div></div>
+  </div>
+</section>
+
+<footer>下一课：多头注意力 + 位置编码 —— 你可能注意到了，Self-Attention 完全不知道词的顺序。</footer>
+</main>
+
+<script>
+/* ---------- 实验 1：软查字典 ---------- */
+const keys = [
+  {name:'红', ang:20,  col:[230,60,50]},
+  {name:'黄', ang:100, col:[240,200,40]},
+  {name:'绿', ang:170, col:[40,170,80]},
+  {name:'蓝', ang:250, col:[50,100,230]},
+  {name:'紫', ang:320, col:[150,60,200]},
+];
+function drawDict(){
+  const a = +$('#ang').value, sh = +$('#sharp').value;
+  $('#angv').textContent = a + '°'; $('#sharpv').textContent = sh.toFixed(1);
+  const q = [Math.cos(a*Math.PI/180), Math.sin(a*Math.PI/180)];
+  const ks = keys.map(k => [Math.cos(k.ang*Math.PI/180), Math.sin(k.ang*Math.PI/180)]);
+  const scores = ks.map(k => dot(q,k)*sh);
+  const w = softmax(scores);
+  const C = 160, R = 120, ink = cssVar('--ink'), acc = cssVar('--accent');
+  let s = `<circle cx="${C}" cy="${C}" r="${R}" fill="none" stroke="${cssVar('--line')}"/>`;
+  keys.forEach((k,i)=>{
+    const [x,y] = ks[i];
+    s += `<line x1="${C}" y1="${C}" x2="${C+x*R}" y2="${C-y*R}" stroke="rgb(${k.col})" stroke-width="${1+w[i]*8}" stroke-opacity="${.25+w[i]*.75}"/>`;
+    s += `<circle cx="${C+x*R}" cy="${C-y*R}" r="13" fill="rgb(${k.col})"/><text x="${C+x*R}" y="${C-y*R+5}" font-size="13" text-anchor="middle" fill="#fff">${k.name}</text>`;
+  });
+  s += `<defs><marker id="m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="${ink}"/></marker></defs>`;
+  s += `<line x1="${C}" y1="${C}" x2="${C+q[0]*(R-25)}" y2="${C-q[1]*(R-25)}" stroke="${ink}" stroke-width="3" marker-end="url(#m)"/><text x="${C+q[0]*(R-48)+8}" y="${C-q[1]*(R-48)}" font-size="14" font-weight="700" fill="${ink}">q</text>`;
+  $('#dict').innerHTML = s;
+  bars($('#dictBars'), keys.map((k,i)=>`${k.name} ${scores[i]>=0?' ':''}${scores[i].toFixed(2)}`), w, {max:1});
+  const mix = [0,1,2].map(c => Math.round(keys.reduce((s,k,i)=>s+w[i]*k.col[c],0)));
+  $('#mix').style.background = `rgb(${mix})`;
+  $('#mixTxt').textContent = `rgb(${mix.join(', ')}) —— 是各种颜色按权重混合出来的`;
+}
+['ang','sharp'].forEach(id => $('#'+id).oninput = drawDict);
+
+/* ---------- 实验 2：完整计算 ---------- */
+let sel = 0;
+function embed(tok, d){ // 每个 token 根据字符得到固定的伪随机向量
+  let h = 7; for (const c of tok) h = (h*131 + c.codePointAt(0)) % 1e9;
+  const R = rng(h); return Array.from({length:d}, () => +(R.normal()).toFixed(2));
+}
+function run(){
+  const toks = $('#sent').value.trim().split(/\s+/).filter(Boolean).slice(0,12);
+  if (!toks.length) return;
+  sel = Math.min(sel, toks.length-1);
+  const d = +$('#dsel').value, show = d <= 8;
+  const R = rng(2024);
+  const X = toks.map(t => embed(t,d));
+  const Wq = randMat(d,d,R,1/Math.sqrt(d)), Wk = randMat(d,d,R,1/Math.sqrt(d)), Wv = randMat(d,d,R,1/Math.sqrt(d));
+  // 让"它"的 query 和"小猫"的 key 更像一点，演示指代
+  const Q = matmul(X,Wq), K = matmul(X,Wk), V = matmul(X,Wv);
+  const it = toks.indexOf('它'), cat = toks.indexOf('小猫');
+  if (it >= 0 && cat >= 0) Q[it] = K[cat].map(v => v*1.6);
+  const scaleOn = $('#scale').checked, causal = $('#causal').checked;
+  const S = matmul(Q, T(K)).map((r,i) => r.map((v,j) => (causal && j>i) ? -Infinity : v / (scaleOn ? Math.sqrt(d) : 1)));
+  const A = S.map(r => softmax(r));
+  const Z = matmul(A, V);
+  const cols = [...Array(d).keys()].map(i=>'d'+i);
+  const opt = {rows:toks, hlRow:sel, onRow:i=>{sel=i;run();}, showVal:show};
+  heatmap($('#mX'), X, {...opt, cols: show?cols:[]});
+  heatmap($('#mQ'), Q, {...opt, rows:show?toks:[], cols:[]});
+  heatmap($('#mK'), K, {...opt, rows:show?toks:[], cols:[]});
+  heatmap($('#mV'), V, {...opt, rows:show?toks:[], cols:[]});
+  heatmap($('#mS'), S, {rows:toks, cols:toks, hlRow:sel, onRow:i=>{sel=i;run();}, fmt:v=>v.toFixed(1)});
+  heatmap($('#mA'), A, {rows:toks, cols:toks, hlRow:sel, onRow:i=>{sel=i;run();}, diverging:false, max:1, fmt:v=>v.toFixed(2)});
+  heatmap($('#mZ'), Z, {rows:toks, cols:show?cols:[], hlRow:sel, onRow:i=>{sel=i;run();}, showVal:show});
+  $('#scTxt').textContent = scaleOn ? `/ √${d}` : '（未缩放）';
+  drawArcs(toks, A[sel]);
+  const top = A[sel].map((w,j)=>[w,j]).sort((a,b)=>b[0]-a[0]).slice(0,3);
+  $('#note').innerHTML = `“<b>${toks[sel]}</b>” 最关注：${top.map(([w,j])=>`<b>${toks[j]}</b> (${(w*100).toFixed(0)}%)`).join('、')}。` +
+    (it>=0 && cat>=0 ? ` 我特意把“它”的 query 设得和“小猫”的 key 相似 —— 点击“它”那一行看看，这就是模型学会<b>指代消解</b>后的样子。真实模型里 W<sub>Q</sub>、W<sub>K</sub>、W<sub>V</sub> 都是训练学出来的。` : '') +
+    (d>8 ? ' d 较大时矩阵只显示颜色。' : '');
+}
+function drawArcs(toks, w){
+  const W = $('#arcs').clientWidth || 900, n = toks.length, y = 140;
+  const x = i => 30 + i*(W-60)/Math.max(n-1,1);
+  const acc = cssVar('--accent'), ink = cssVar('--ink');
+  let s = '';
+  w.forEach((v,j)=>{
+    if (v < 0.01) return;
+    const x1 = x(sel), x2 = x(j), h = Math.min(120, 20 + Math.abs(x2-x1)*0.35);
+    s += j===sel ? `<circle cx="${x1}" cy="${y-22}" r="${6+v*14}" fill="none" stroke="${acc}" stroke-opacity="${.3+v*.7}" stroke-width="${1+v*6}"/>`
+      : `<path d="M${x1} ${y-14} Q ${(x1+x2)/2} ${y-14-h} ${x2} ${y-14}" fill="none" stroke="${acc}" stroke-width="${1+v*10}" stroke-opacity="${.25+v*.75}"/>`;
+  });
+  toks.forEach((t,i)=> s += `<text x="${x(i)}" y="${y+12}" text-anchor="middle" font-size="15" font-weight="${i===sel?700:400}" fill="${i===sel?acc:ink}" style="cursor:pointer" data-i="${i}">${esc(t)}</text>`);
+  $('#arcs').setAttribute('viewBox', `0 0 ${W} 170`);
+  $('#arcs').innerHTML = s;
+  $$('#arcs text').forEach(t => t.onclick = () => { sel = +t.dataset.i; run(); });
+}
+['sent','scale','causal','dsel'].forEach(id => $('#'+id).oninput = run);
+addEventListener('resize', run);
+
+/* ---------- 实验 3：为什么缩放 ---------- */
+let seed3 = 1;
+function scaleDemo(){
+  const d = 2 ** +$('#dd').value; $('#ddv').textContent = d;
+  const R = rng(seed3), q = Array.from({length:d}, R.normal);
+  const ks = Array.from({length:8}, () => Array.from({length:d}, R.normal));
+  const s = ks.map(k => dot(q,k));
+  const lab = s.map((v,i)=>`k${i} ${v.toFixed(0).padStart(4)}`);
+  bars($('#noScale'), lab, softmax(s), {max:1});
+  bars($('#withScale'), lab, softmax(s.map(v => v/Math.sqrt(d))), {max:1});
+}
+$('#dd').oninput = scaleDemo; $('#reroll').onclick = () => { seed3++; scaleDemo(); };
+
+drawDict(); run(); scaleDemo();
+</script>
+</body>
+</html>

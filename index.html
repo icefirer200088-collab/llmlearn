@@ -32,21 +32,21 @@
 const stages = [
   ["阶段一 · 看懂 Transformer", [
     ["01","Tokenization 与 Embedding","文字如何变成数字","lessons/01-tokenization-embedding/viz.html"],
-    ["02","Self-Attention","Q / K / V 与注意力矩阵"],
-    ["03","多头注意力 + 位置编码","多个子空间；模型如何感知顺序"],
-    ["04","Transformer Block","残差、LayerNorm、FFN、因果掩码"]]],
+    ["02","Self-Attention","Q / K / V 与注意力矩阵","lessons/02-self-attention/viz.html"],
+    ["03","多头注意力 + 位置编码","多个子空间；模型如何感知顺序","lessons/03-multihead-position/viz.html"],
+    ["04","Transformer Block","残差、LayerNorm、FFN、因果掩码","lessons/04-transformer-block/viz.html"]]],
   ["阶段二 · 写出一个 GPT", [
-    ["05","从零写 mini-GPT","numpy 手写前向与反向传播"],
-    ["06","采样与生成","温度、top-k、top-p、KV Cache"]]],
+    ["05","从零写 mini-GPT","numpy 手写前向与反向传播","lessons/05-mini-gpt/viz.html"],
+    ["06","采样与生成","温度、top-k、top-p、KV Cache","lessons/06-sampling/viz.html"]]],
   ["阶段三 · 从基座到助手", [
-    ["07","预训练 → SFT → RLHF / DPO","聊天模型是如何炼成的"],
-    ["08","Scaling 与高效推理","Scaling Law、量化、MoE、长上下文"]]],
+    ["07","预训练 → SFT → RLHF / DPO","聊天模型是如何炼成的","lessons/07-alignment/viz.html"],
+    ["08","Scaling 与高效推理","Scaling Law、量化、MoE、长上下文","lessons/08-scaling-inference/viz.html"]]],
   ["阶段四 · 走向 Agent", [
-    ["09","Prompt 与 In-Context Learning","为什么提示词有效"],
-    ["10","RAG","检索增强生成"],
-    ["11","Tool Use","让模型调用工具"],
-    ["12","ReAct Agent","思考—行动—观察循环"],
-    ["13","多 Agent、记忆与评估","规划、记忆、协作、评测"]]],
+    ["09","Prompt 与 In-Context Learning","为什么提示词有效","lessons/09-prompt-icl/viz.html"],
+    ["10","RAG","检索增强生成","lessons/10-rag/viz.html"],
+    ["11","Tool Use","让模型调用工具","lessons/11-tool-use/viz.html"],
+    ["12","ReAct Agent","思考—行动—观察循环","lessons/12-react-agent/viz.html"],
+    ["13","多 Agent、记忆与评估","规划、记忆、协作、评测","lessons/13-multi-agent-eval/viz.html"]]],
 ];
 document.getElementById("list").innerHTML = stages.map(([h,ls]) => `<h2>${h}</h2>` + ls.map(([n,t,d,u]) =>
   u ? `<a class="card" href="${u}"><span class="n">${n}</span><span class="t"><b>${t}</b><span>${d}</span></span><span class="s">开始 →</span></a>`

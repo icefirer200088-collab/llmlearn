@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 08 课 · Scaling Law 与高效推理</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .knob input[type=range]{width:240px}
+  input[type=number]{width:90px;font:14px var(--mono);padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+  .big{font:700 26px var(--mono)}
+  .ex{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-top:10px}
+  .ex div{border:1px solid var(--line);border-radius:8px;padding:8px 4px;text-align:center;font:12px var(--mono);background:var(--bg)}
+  .ex div.on{border-color:var(--accent);background:var(--accent);color:#fff}
+  .gpu{display:inline-block;margin:4px 8px 4px 0;padding:4px 10px;border-radius:6px;font:13px var(--mono);border:1px solid var(--line)}
+  .gpu.ok{border-color:var(--green);color:var(--green)} .gpu.no{opacity:.45;text-decoration:line-through}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../07-alignment/viz.html">← 07 对齐</a><a href="../../index.html">目录</a><a href="../09-prompt-icl/viz.html">09 Prompt 与 ICL →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 08</div>
+  <h1>Scaling Law 与高效推理</h1>
+  <p class="lead">为什么大家拼命把模型做大？有了固定的算力，该把模型做多大、喂多少数据？训练好的大模型，又怎么塞进有限的显卡里、跑得更快？</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>Scaling Law：loss 随规模可预测地下降</h2>
+  <p class="hint">Chinchilla 论文（Hoffmann et al., 2022）拟合出：<code>L(N, D) = E + A/N^α + B/D^β</code>，N = 参数量，D = 训练 token 数，训练算力 C ≈ 6·N·D。给定算力预算，下图画出<b>不同模型大小</b>能达到的 loss（每个 N 对应 D = C / 6N），最低点就是最优分配。</p>
+  <div class="knob">算力预算 C = <input type="range" id="cmp" min="18" max="26" step="0.1" value="23.8"> <b class="mono" id="cv"></b> FLOPs</div>
+  <div class="grid2">
+    <svg id="iso" viewBox="0 0 460 260" style="width:100%"></svg>
+    <div>
+      <p>最优模型大小 N* = <span class="big" id="nopt"></span></p>
+      <p>最优训练数据 D* = <span class="big" id="dopt"></span></p>
+      <p>每个参数配 <b id="ratio" class="mono"></b> 个 token，预测 loss = <b id="lopt" class="mono"></b></p>
+      <div class="callout">Chinchilla 的结论：参数和数据应该<b>大致等比例</b>增长，常被引用的经验值是每个参数配约 20 个 token（论文前两种拟合方法的结果）。本页用的是论文第三种方法的公式，算出的比例略高，并随规模变大。GPT-3（175B 参数，3000 亿 token）按这个标准是"数据不足"的。但现在的模型（如 Llama-3 8B 用了 15 万亿 token）会远超这个比例 —— 因为模型训练一次、推理上亿次，小模型多喂数据<b>推理更便宜</b>。</div>
+    </div>
+  </div>
+  <h3 style="margin-top:14px">真实模型在这个公式下的位置</h3>
+  <div id="real"></div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>模型要占多少显存？</h2>
+  <p class="hint">推理时：权重 = 参数量 × 每个参数的字节数。训练时（混合精度 + Adam）大约每个参数 16 字节：FP16 权重 2 + FP16 梯度 2 + FP32 主权重 4 + Adam 两个状态 8。还没算激活值和 KV Cache。</p>
+  <div class="row">
+    <span class="knob">参数量 <input type="number" id="pp" value="7" step="0.5"> B</span>
+    <button data-pp="1.5">1.5B</button><button data-pp="7">7B</button><button data-pp="70">70B</button><button data-pp="405">405B</button>
+  </div>
+  <div id="memTab" style="margin-top:12px"></div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>量化：用更少的比特存权重</h2>
+  <p class="hint">把 FP16 权重映射到 INT8（256 个格子）或 INT4（16 个格子）：<code>q = round(w / s)</code>，<code>s = max|w| / (2^(b−1)−1)</code>。问题在于<b>离群值</b>：一个特别大的权重会把刻度 s 撑大，其余权重全挤在几个格子里。解决办法：<b>分组量化</b>，每 32/64/128 个权重单独算一个刻度。</p>
+  <div class="row">
+    <span class="knob">位数 <select id="qb"><option value="8">INT8</option><option value="4" selected>INT4</option><option value="3">INT3</option><option value="2">INT2</option></select></span>
+    <label class="knob"><input type="checkbox" id="qo" checked> 加入离群值</label>
+    <span class="knob">分组 <select id="qg"><option value="1024">不分组（整个张量一个刻度）</option><option value="128">每 128 个一组</option><option value="32">每 32 个一组</option></select></span>
+  </div>
+  <div class="grid2">
+    <div class="box"><h3>权重分布：原始（灰）vs 量化后（橙）</h3><svg id="qh" viewBox="0 0 460 200" style="width:100%"></svg></div>
+    <div class="box"><p>量化误差 (MSE)：<span class="big" id="qmse"></span></p><p>相对误差：<b class="mono" id="qrel"></b></p><p>实际用到的不同取值数：<b class="mono" id="quse"></b></p><p class="hint" id="qtxt"></p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>MoE（混合专家）：参数很多，但每次只用一小部分</h2>
+  <p class="hint">把 FFN 换成 N 个"专家" FFN，再加一个路由器：每个 token 只送给得分最高的 k 个专家。总参数大（知识容量大），但每个 token 的计算量只相当于一个小模型。点击不同的 token 看路由结果。</p>
+  <div class="row" id="moeToks"></div>
+  <div class="ex" id="experts"></div>
+  <div class="grid2">
+    <div class="box"><h3>路由器打分（softmax 后），选 top-2</h3><div id="router"></div></div>
+    <div class="box"><h3>参数量对比（以 Mixtral 8×7B 为例）</h3>
+      <p>总参数：<span class="big">46.7B</span></p><p>每个 token 实际激活：<span class="big">12.9B</span></p>
+      <p class="hint">推理速度接近 13B 模型，效果接近更大的稠密模型。但全部 46.7B 参数都要放在显存里。DeepSeek-V3（671B 总参数，37B 激活）把这个比例推得更极端。</p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">05</span>长上下文：注意力矩阵是 T² 的</h2>
+  <p class="hint">标准注意力要在显存里存一个 T×T 的分数矩阵。FlashAttention 把 Q、K、V 切成小块，在 GPU 的高速缓存里边算边做 softmax（"在线 softmax"），<b>从不完整存储 T×T 矩阵</b>，结果完全一样。</p>
+  <div class="knob">上下文长度 T = <input type="range" id="tl" min="9" max="20" value="13"> <b class="mono" id="tlv"></b></div>
+  <p>一个头的注意力矩阵（FP16）：<span class="big" id="attMem"></span> <span class="hint" id="attTxt"></span></p>
+</section>
+
+<footer>下一课：Prompt 与 In-Context Learning —— 进入"用好 LLM"的阶段。</footer>
+</main>
+
+<script>
+/* ---------- 01 Scaling law ---------- */
+const E=1.69, A=406.4, B=410.7, al=0.34, be=0.28;
+const L = (N,D) => E + A/N**al + B/D**be;
+const fmtB = n => n>=1e12 ? (n/1e12).toFixed(1)+'T' : n>=1e9 ? (n/1e9).toFixed(1)+'B' : (n/1e6).toFixed(0)+'M';
+function drawIso(){
+  const lc = +$('#cmp').value, C = 10**lc; $('#cv').textContent = `10^${lc.toFixed(1)}`;
+  const w=460,h=260, xs=[], ys=[];
+  for (let lx=6; lx<=13; lx+=0.02){ const N=10**lx, D=C/(6*N); if (D<1e6) continue; xs.push(lx); ys.push(L(N,D)); }
+  let k=0; ys.forEach((v,i)=>{ if(v<ys[k]) k=i; });
+  const Nopt = 10**xs[k], Dopt = C/(6*Nopt);
+  $('#nopt').textContent = fmtB(Nopt); $('#dopt').textContent = fmtB(Dopt)+' token'; $('#ratio').textContent = (Dopt/Nopt).toFixed(0); $('#lopt').textContent = ys[k].toFixed(3);
+  const ymin = Math.min(...ys), ymax = Math.min(Math.max(...ys), ymin+2.5);
+  const px = lx => 45+(lx-6)/7*(w-60), py = y => h-30-(Math.min(y,ymax)-ymin)/(ymax-ymin)*(h-50);
+  const mut=cssVar('--muted'), acc=cssVar('--accent');
+  let s = `<line x1="45" y1="${h-30}" x2="${w-10}" y2="${h-30}" stroke="${cssVar('--line')}"/><line x1="45" y1="10" x2="45" y2="${h-30}" stroke="${cssVar('--line')}"/>`;
+  for (let lx=6; lx<=13; lx++) s += `<text x="${px(lx)}" y="${h-14}" font-size="10" text-anchor="middle" fill="${mut}">${fmtB(10**lx)}</text>`;
+  s += `<text x="${w-10}" y="${h-1}" font-size="11" text-anchor="end" fill="${mut}">模型参数量 N（对数轴）</text><text x="50" y="16" font-size="11" fill="${mut}">loss</text>`;
+  s += `<text x="40" y="${py(ymin)+4}" font-size="10" text-anchor="end" fill="${mut}">${ymin.toFixed(2)}</text><text x="40" y="${py(ymax)+4}" font-size="10" text-anchor="end" fill="${mut}">${ymax.toFixed(2)}</text>`;
+  s += `<path d="${xs.map((x,i)=>`${i?'L':'M'}${px(x).toFixed(1)} ${py(ys[i]).toFixed(1)}`).join(' ')}" fill="none" stroke="${acc}" stroke-width="2.5"/>`;
+  s += `<circle cx="${px(xs[k])}" cy="${py(ys[k])}" r="6" fill="${acc}"/><text x="${px(xs[k])}" y="${py(ys[k])-12}" font-size="12" text-anchor="middle" fill="${acc}">最优</text>`;
+  s += `<text x="${px(6.3)}" y="${py(ymax)+16}" font-size="11" fill="${mut}">← 模型太小，学不下</text><text x="${w-14}" y="${py(ymax)+16}" font-size="11" text-anchor="end" fill="${mut}">模型太大，数据不够 →</text>`;
+  $('#iso').innerHTML = s;
+}
+$('#cmp').oninput = drawIso;
+const REAL = [['GPT-3 (2020)',175e9,300e9],['Chinchilla (2022)',70e9,1.4e12],['Llama-2 7B (2023)',7e9,2e12],['Llama-3 8B (2024)',8e9,15e12],['Llama-3 405B (2024)',405e9,15.6e12]];
+$('#real').innerHTML = `<table class="hm" style="font-size:13px"><tr><th class="r">模型</th><th>参数 N</th><th>token D</th><th>D/N</th><th>算力 6ND</th><th>公式预测 loss</th></tr>` +
+  REAL.map(([n,N,D])=>`<tr><th class="r">${n}</th><td>${fmtB(N)}</td><td>${fmtB(D)}</td><td>${(D/N).toFixed(0)}</td><td>${(6*N*D).toExponential(1)}</td><td>${L(N,D).toFixed(3)}</td></tr>`).join('') + '</table>' +
+  `<p class="hint" style="margin-top:6px">不同模型的分词器和数据不同，loss 不能直接横向比较，这里只用于理解趋势。</p>`;
+
+/* ---------- 02 显存 ---------- */
+const GPUS = [['RTX 4090',24],['A100 / H100',80],['8 × H100',640]];
+function drawMem(){
+  const P = +$('#pp').value*1e9;
+  const rows = [['训练（Adam 混合精度）',16],['推理 FP16 / BF16',2],['推理 INT8',1],['推理 INT4',0.5]];
+  $('#memTab').innerHTML = rows.map(([n,b])=>{ const gb = P*b/1024**3;
+    return `<div style="display:grid;grid-template-columns:200px 120px 1fr;gap:10px;align-items:center;margin:6px 0"><span>${n}</span><b class="mono">${gb>=1000?(gb/1024).toFixed(1)+' TB':gb.toFixed(1)+' GB'}</b><span>${GPUS.map(([g,c])=>`<span class="gpu ${gb<c*0.9?'ok':'no'}">${g} ${c}GB</span>`).join('')}</span></div>`; }).join('');
+}
+$('#pp').oninput = drawMem;
+$$('button[data-pp]').forEach(b=>b.onclick=()=>{ $('#pp').value=b.dataset.pp; drawMem(); });
+
+/* ---------- 03 量化 ---------- */
+const QR = rng(3), W0 = Array.from({length:1024}, ()=>QR.normal()*0.02);
+function quant(w, bits, g){
+  const out = [], qmax = 2**(bits-1)-1;
+  for (let i=0;i<w.length;i+=g){
+    const blk = w.slice(i,i+g), s = Math.max(...blk.map(Math.abs))/qmax || 1;
+    blk.forEach(v=>out.push(Math.max(-qmax-1, Math.min(qmax, Math.round(v/s)))*s));
+  }
+  return out;
+}
+function drawQ(){
+  const bits=+$('#qb').value, g=+$('#qg').value, w = W0.slice();
+  if ($('#qo').checked){ w[100]=0.35; w[700]=-0.3; }
+  const q = quant(w,bits,g);
+  const mse = w.reduce((s,v,i)=>s+(v-q[i])**2,0)/w.length, pw = w.reduce((s,v)=>s+v*v,0)/w.length;
+  $('#qmse').textContent = mse.toExponential(2); $('#qrel').textContent = (Math.sqrt(mse/pw)*100).toFixed(1)+'%';
+  $('#quse').textContent = new Set(q.map(v=>v.toFixed(7))).size + ` / ${2**bits * (1024/g)}`;
+  const zeros = q.filter(v=>v===0).length;
+  $('#qtxt').textContent = ($('#qo').checked && g===1024 ? '离群值把刻度撑大了：绝大多数权重（集中在 ±0.05 内）只能落进 0 附近的少数几个格子。试试分组量化。'
+    : g===1024 ? '没有离群值时，整个张量一个刻度也还行。勾上“加入离群值”看看会发生什么。'
+    : '分组后，每组按自己的范围定刻度，离群值只影响它所在的那一组。') + ` 当前有 ${zeros} / 1024 个权重被量化成了 0。`;
+  // 直方图
+  const w2=460,h=200, lo=-0.08, hi=0.08, nb=80, bin=v=>Math.floor((v-lo)/(hi-lo)*nb);
+  const h1=Array(nb).fill(0), h2=Array(nb).fill(0);
+  w.forEach(v=>{const b=bin(v); if(b>=0&&b<nb) h1[b]++;}); q.forEach(v=>{const b=bin(v); if(b>=0&&b<nb) h2[b]++;});
+  const mx = Math.max(...h1,...h2), bw=(w2-20)/nb;
+  let s = `<line x1="10" y1="${h-20}" x2="${w2-10}" y2="${h-20}" stroke="${cssVar('--line')}"/>`;
+  h1.forEach((c,i)=> s += `<rect x="${10+i*bw}" y="${h-20-c/mx*(h-40)}" width="${bw-1}" height="${c/mx*(h-40)}" fill="${cssVar('--muted')}" fill-opacity=".35"/>`);
+  h2.forEach((c,i)=> c && (s += `<rect x="${10+i*bw+bw*0.25}" y="${h-20-c/mx*(h-40)}" width="${bw*0.5}" height="${c/mx*(h-40)}" fill="${cssVar('--accent')}"/>`));
+  s += `<text x="10" y="${h-4}" font-size="10" fill="${cssVar('--muted')}">${lo}</text><text x="${w2-10}" y="${h-4}" font-size="10" text-anchor="end" fill="${cssVar('--muted')}">+${hi}</text>`;
+  $('#qh').innerHTML = s;
+}
+['qb','qo','qg'].forEach(id=>$('#'+id).oninput=drawQ);
+
+/* ---------- 04 MoE ---------- */
+const MTOK = ['def','函数','猫','=','巴黎','∫','hello','。'];
+let msel = 0;
+function drawMoE(){
+  $('#moeToks').innerHTML = MTOK.map((t,i)=>`<button class="${i===msel?'on':''}" data-i="${i}">${t}</button>`).join('');
+  $$('#moeToks button').forEach(b=>b.onclick=()=>{ msel=+b.dataset.i; drawMoE(); });
+  let h=1; for (const c of MTOK[msel]) h=h*31+c.codePointAt(0);
+  const r = rng(h), lg = Array.from({length:8}, ()=>r.normal()*1.6), p = softmax(lg);
+  const top2 = p.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).slice(0,2).map(x=>x[1]);
+  $('#experts').innerHTML = p.map((v,i)=>`<div class="${top2.includes(i)?'on':''}">专家 ${i+1}</div>`).join('');
+  bars($('#router'), p.map((_,i)=>`专家 ${i+1}`), p, {max:1, dim: p.map((_,i)=>!top2.includes(i))});
+}
+
+/* ---------- 05 长上下文 ---------- */
+function drawAtt(){
+  const T = 2**+$('#tl').value; $('#tlv').textContent = T.toLocaleString();
+  const b = T*T*2, gb = b/1024**3;
+  $('#attMem').textContent = gb>=1 ? gb.toFixed(1)+' GB' : (b/1024**2).toFixed(1)+' MB';
+  $('#attTxt').textContent = `（× 头数 × batch，还要存下来用于反向传播。Llama-3 8B 有 32 个头：${(gb*32).toFixed(1)} GB / 层）`;
+}
+$('#tl').oninput = drawAtt;
+
+drawIso(); drawMem(); drawQ(); drawMoE(); drawAtt();
+</script>
+</body>
+</html>

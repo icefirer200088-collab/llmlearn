@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 05 课 · 从零写一个 mini-GPT</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .win{font:15px var(--mono);line-height:2;word-break:break-all}
+  .win span{padding:2px 1px;border-radius:3px}
+  .win .in{background:var(--blue-soft)} .win .tg{background:var(--accent);color:#fff}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .sample{font:13px/1.5 var(--mono);white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;min-height:120px}
+  .loop{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:13px}
+  .loop span.s{padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .loop span.s.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:700}
+  .big{font:700 30px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../04-transformer-block/viz.html">← 04 Transformer Block</a><a href="../../index.html">目录</a><a href="../06-sampling/viz.html">06 采样与生成 →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 05</div>
+  <h1>从零写一个 mini-GPT，并看它学会说话</h1>
+  <p class="lead">前四课的零件已经齐了。本课回答最后一个问题：<b>模型的参数是怎么学出来的？</b> 答案出奇地简单 —— 不断地"预测下一个字"，猜错了就沿梯度方向改一点点。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>训练目标：预测下一个 token</h2>
+  <p class="hint">从语料里随便截一段，<span style="background:var(--blue-soft);padding:1px 4px;border-radius:3px">输入</span>是前面的字，<span style="background:var(--accent);color:#fff;padding:1px 4px;border-radius:3px">目标</span>是紧接着的下一个字。一段长度为 T 的文本，因为有因果掩码，能<b>同时</b>产生 T 个训练样本。不需要任何人工标注 —— 这就是"自监督"。</p>
+  <div class="row"><span class="knob">窗口位置 <input type="range" id="wpos" min="0" max="800" value="0" style="width:260px"></span><span class="knob">预测位置 <input type="range" id="wt" min="1" max="24" value="10"></span></div>
+  <div class="box win" id="win" style="margin-top:10px"></div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>损失函数：交叉熵 = −log(给正确答案的概率)</h2>
+  <p class="hint">模型输出的是词表上的概率分布。正确答案拿到的概率越高，loss 越低。拖动滑块感受一下：完全随机地在 45 个字符里猜，p = 1/45，loss = ln 45 ≈ 3.81。</p>
+  <div class="grid2">
+    <div>
+      <div class="knob">P(正确答案) <input type="range" id="pc" min="0.001" max="1" step="0.001" value="0.0222" style="width:240px"> <b class="mono" id="pcv"></b></div>
+      <p>loss = −ln p = <span class="big" id="ce"></span></p>
+      <p class="hint" id="ceTxt"></p>
+    </div>
+    <svg id="ceCurve" viewBox="0 0 420 200" style="width:100%"></svg>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>在浏览器里现场训练一个模型</h2>
+  <p class="hint">语料是 Python 自带的《Python 之禅》（856 个字符）。浏览器里训练的是最简单的 <b>Bigram 模型</b>：只根据<b>当前 1 个字符</b>预测下一个（参数就是一张 45×45 的表）。每一步：取一批样本 → 前向算概率 → 算 loss → 反向算梯度 → 更新参数。</p>
+  <div class="loop" id="loop"><span class="s" data-k="batch">① 取 batch</span>→<span class="s" data-k="fwd">② 前向传播</span>→<span class="s" data-k="loss">③ 计算 loss</span>→<span class="s" data-k="bwd">④ 反向传播</span>→<span class="s" data-k="upd">⑤ 更新参数</span>↺</div>
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="go">▶ 开始训练</button><button id="one">单步</button><button id="rst">重置</button>
+    <span class="knob">学习率 <input type="range" id="lr" min="-2" max="1.3" step="0.1" value="0.5"> <b class="mono" id="lrv"></b></span>
+    <span style="flex:1"></span><div class="stat" id="stepN">0<span>步</span></div><div class="stat" id="lossN">—<span>当前 loss</span></div>
+  </div>
+  <div class="grid2">
+    <div class="box"><h3>Loss 曲线</h3><div id="curve"></div></div>
+    <div class="box"><h3>模型当前生成的文本（每 20 步刷新）</h3><div class="sample" id="samp"></div></div>
+  </div>
+  <div class="box" style="margin-top:16px"><h3>学到的概率表 P(下一个 | 当前)（只显示最常见的 14 个字符；␣ = 空格，↵ = 换行）</h3><div id="bg" style="overflow-x:auto"></div></div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>Bigram vs 真正的 Transformer</h2>
+  <p class="hint">Bigram 只看 1 个字符，loss 最低也就 ~2.0，生成的东西像乱码。<code>mini_gpt.py</code> 用 numpy 实现了第 04 课的完整 Transformer Block（含手写反向传播），能看 32 个字符的上下文。下面是它真实的训练曲线（1500 步，约 20 秒）：</p>
+  <div class="grid2">
+    <div class="box"><h3>mini-GPT（橙）vs Bigram 理论最优（蓝线）</h3><div id="cmp"></div></div>
+    <div class="box"><h3>mini-GPT 训练 1500 步后的生成</h3><div class="sample">Simple is better than complicated.
+Flat is better than nested.
+Sparse is better than do explain, it's a bad idea.
+If the implementation is hard to explain, it's a bad idea.</div>
+    <div class="callout">loss 降到 0.2 —— 它几乎<b>背下</b>了整段文本（"过拟合"）。语料只有 856 个字符，模型却有 5.7 万个参数。真实的大模型用万亿级 token 训练，才能学到泛化的语言规律。</div></div>
+  </div>
+</section>
+
+<footer>下一课：采样与生成 —— 模型输出了概率分布，具体选哪个字？</footer>
+</main>
+
+<script>
+const TEXT = "The Zen of Python, by Tim Peters\n\nBeautiful is better than ugly.\nExplicit is better than implicit.\nSimple is better than complex.\nComplex is better than complicated.\nFlat is better than nested.\nSparse is better than dense.\nReadability counts.\nSpecial cases aren't special enough to break the rules.\nAlthough practicality beats purity.\nErrors should never pass silently.\nUnless explicitly silenced.\nIn the face of ambiguity, refuse the temptation to guess.\nThere should be one-- and preferably only one --obvious way to do it.\nAlthough that way may not be obvious at first unless you're Dutch.\nNow is better than never.\nAlthough never is often better than *right* now.\nIf the implementation is hard to explain, it's a bad idea.\nIf the implementation is easy to explain, it may be a good idea.\nNamespaces are one honking great idea -- let's do more of those!";
+const chars = [...new Set(TEXT)].sort(), V = chars.length, stoi = Object.fromEntries(chars.map((c,i)=>[c,i]));
+const data = [...TEXT].map(c=>stoi[c]);
+const vis = c => c===' '?'␣':c==='\n'?'↵':c;
+
+/* ---------- 01 窗口 ---------- */
+function drawWin(){
+  const p = +$('#wpos').value, t = +$('#wt').value, seg = [...TEXT.slice(p, p+25)];
+  $('#win').innerHTML = seg.map((c,i)=>`<span class="${i<t?'in':i===t?'tg':''}">${esc(vis(c))}</span>`).join('') +
+    `<div style="font:14px var(--mono);margin-top:6px;color:var(--muted)">输入: "${esc(seg.slice(0,t).map(vis).join(''))}" → 目标: "<b style="color:var(--accent)">${esc(vis(seg[t]||''))}</b>"</div>`;
+}
+['wpos','wt'].forEach(id=>$('#'+id).oninput=drawWin);
+
+/* ---------- 02 交叉熵 ---------- */
+function drawCE(){
+  const p = +$('#pc').value; $('#pcv').textContent = p.toFixed(3);
+  const l = -Math.log(p); $('#ce').textContent = l.toFixed(3);
+  $('#ceTxt').textContent = p<0.03?'接近瞎猜。':p<0.3?'有点把握了。':p<0.9?'相当自信且答对了。':'几乎确定 —— loss 接近 0。';
+  const w=420,h=200, px=x=>40+x*(w-55), py=y=>h-25-y/7*(h-40);
+  let s = `<line x1="40" y1="${h-25}" x2="${w-10}" y2="${h-25}" stroke="${cssVar('--line')}"/><line x1="40" y1="10" x2="40" y2="${h-25}" stroke="${cssVar('--line')}"/>`;
+  s += `<path d="${Array.from({length:200},(_,i)=>{const x=0.001+i/199*0.999;return `${i?'L':'M'}${px(x).toFixed(1)} ${py(-Math.log(x)).toFixed(1)}`;}).join(' ')}" fill="none" stroke="${cssVar('--accent')}" stroke-width="2"/>`;
+  s += `<circle cx="${px(p)}" cy="${py(l)}" r="6" fill="${cssVar('--accent')}"/><text x="${w-10}" y="${h-8}" font-size="11" text-anchor="end" fill="${cssVar('--muted')}">P(正确)</text><text x="44" y="16" font-size="11" fill="${cssVar('--muted')}">loss</text>`;
+  $('#ceCurve').innerHTML = s;
+}
+$('#pc').oninput = drawCE;
+
+/* ---------- 03 Bigram 训练 ---------- */
+let Wb, hist, it, timer, R;
+const topIds = (()=>{ const c={}; data.forEach(i=>c[i]=(c[i]||0)+1); return Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,14).map(e=>+e[0]); })();
+function reset(){ R = rng(1); Wb = randMat(V,V,R,0.1); hist=[]; it=0; stop(); render(); $('#samp').textContent='（还没训练，参数是随机的）\n'+sample(); }
+function lrv(){ return 10 ** +$('#lr').value; }
+function hl(k){ $$('#loop .s').forEach(s=>s.classList.toggle('on', s.dataset.k===k)); }
+function trainStep(){
+  const B = 64, G = Wb.map(r=>r.map(()=>0)); let loss = 0;
+  for(let b=0;b<B;b++){
+    const i = Math.floor(R()*(data.length-1)), x = data[i], y = data[i+1];
+    const p = softmax(Wb[x]);                 // 前向：查表得到 logits → softmax
+    loss += -Math.log(p[y]+1e-12);           // 交叉熵
+    for(let j=0;j<V;j++) G[x][j] += (p[j] - (j===y?1:0)) / B;  // 反向：dL/dlogits = p − onehot
+  }
+  const lr = lrv();
+  for(let a=0;a<V;a++) for(let j=0;j<V;j++) Wb[a][j] -= lr*G[a][j];   // 梯度下降
+  it++; hist.push(loss/B);
+}
+function sample(n=160){
+  const r = rng(it+7); let c = stoi['B'], out='B';
+  for(let k=0;k<n;k++){ const p = softmax(Wb[c]); let u=r(), j=0; while(j<V-1 && (u-=p[j])>0) j++; c=j; out+=chars[j]; }
+  return out;
+}
+function render(){
+  $('#stepN').firstChild.nodeValue = it;
+  $('#lossN').firstChild.nodeValue = '—';
+  if (hist.length) $('#lossN').firstChild.nodeValue = (hist.slice(-10).reduce((a,b)=>a+b)/Math.min(10,hist.length)).toFixed(3);
+  const sm = hist.map((_,i)=>{ const w = hist.slice(Math.max(0,i-9),i+1); return w.reduce((a,b)=>a+b)/w.length; });
+  lineChart($('#curve'), [{data: sm.length>1?sm:[Math.log(V),Math.log(V)], name:'bigram'}], {ymin:2, ymax:4.5, xlabel:'步数', ylabel:'loss', h:200});
+  const P = topIds.map(a => { const p = softmax(Wb[a]); return topIds.map(b => p[b]); });
+  heatmap($('#bg'), P, {rows: topIds.map(i=>vis(chars[i])), cols: topIds.map(i=>vis(chars[i])), diverging:false, max:.6, fmt:v=>v<.01?'':(v*100).toFixed(0)});
+  $('#lrv').textContent = lrv().toFixed(2);
+}
+async function tick(){
+  const keys = ['batch','fwd','loss','bwd','upd'];
+  for (let k=0;k<5;k++) trainStep();
+  hl(keys[it/5 % 5 | 0]);
+  render();
+  if (it % 20 === 0) $('#samp').textContent = `第 ${it} 步：\n` + sample();
+}
+function stop(){ clearInterval(timer); timer=null; $('#go').textContent='▶ 开始训练'; hl(''); }
+$('#go').onclick = ()=>{ if(timer) return stop(); $('#go').textContent='⏸ 暂停'; timer = setInterval(()=>{ tick(); if(it>=1500) stop(); }, 40); };
+$('#one').onclick = async ()=>{ stop(); for(const k of ['batch','fwd','loss','bwd','upd']){ hl(k); await sleep(250);} trainStep(); render(); $('#samp').textContent = `第 ${it} 步：\n` + sample(); hl(''); };
+$('#rst').onclick = reset; $('#lr').oninput = render;
+
+/* ---------- 04 对比 ---------- */
+const GPT_LOSS = [3.005,2.43,2.203,2.039,1.859,1.644,1.443,1.202,0.935,0.758,0.604,0.456,0.416,0.347,0.329,0.305,0.293,0.293,0.279,0.256,0.263,0.263,0.278,0.259,0.246,0.233,0.218,0.216,0.223,0.217,0.22,0.217,0.211,0.215,0.236,0.23,0.213,0.202,0.19,0.2,0.185,0.189,0.195,0.195,0.194,0.199,0.192,0.194,0.197,0.184,0.209,0.194,0.172,0.185,0.197,0.19,0.182,0.177,0.172,0.187];
+// 计算 bigram 能达到的最低 loss（直接用频率统计）
+const bigramFloor = (()=>{ const C = Array.from({length:V},()=>Array(V).fill(0)); for(let i=0;i<data.length-1;i++) C[data[i]][data[i+1]]++; let s=0; for(let i=0;i<data.length-1;i++){ const r=C[data[i]], n=r.reduce((a,b)=>a+b); s += -Math.log(r[data[i+1]]/n);} return s/(data.length-1); })();
+lineChart($('#cmp'), [{data:GPT_LOSS, name:'mini-GPT（numpy, 1 层）'}, {data:GPT_LOSS.map(()=>bigramFloor), name:`bigram 理论最优 ${bigramFloor.toFixed(2)}`}], {ymin:0, ymax:3.2, xlabel:'训练步数（×25）', ylabel:'loss', h:220});
+
+drawWin(); drawCE(); reset();
+</script>
+</body>
+</html>

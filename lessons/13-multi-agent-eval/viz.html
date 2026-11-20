@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 13 课 · 多 Agent、记忆与评估</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .wk{display:grid;grid-template-columns:150px 1fr 90px;gap:10px;align-items:center;font-size:13px;margin:6px 0}
+  .wk .track{height:18px;background:var(--line);border-radius:4px;overflow:hidden}
+  .wk .fill{height:100%;background:var(--accent);width:0}
+  .wk .fill.done{background:var(--green)}
+
+  .mem{font-size:13px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;margin:3px 0;background:var(--bg)}
+  .mem.out{opacity:.3;text-decoration:line-through}
+  .mem.sum{border-color:var(--blue);background:var(--blue-soft)}
+  .mem.ltm{border-color:var(--green);background:var(--green-soft)}
+  .mem.key{font-weight:700}
+  .big{font:700 26px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../12-react-agent/viz.html">← 12 ReAct Agent</a><a href="../../index.html">目录</a><span></span></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 13</div>
+  <h1>多 Agent、记忆与评估</h1>
+  <p class="lead">单个 Agent 会遇到三个瓶颈：任务太大一个上下文装不下；对话太长忘了前面的事；以及最根本的 —— <b>你怎么知道它做得好不好？</b> 本课是整个课程的最后一站。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>Orchestrator–Workers：一个领队，多个助手</h2>
+  <p class="hint">任务：“调研 5 个开源大模型的参数量、上下文长度和许可证，整理成表格”。领队 Agent 把任务拆成子任务，分发给多个 worker Agent <b>并行</b>执行（每个 worker 有自己独立的上下文），最后汇总。对比串行和并行。</p>
+  <div class="row">
+    <span class="knob">Worker 数量 <input type="range" id="nw" min="1" max="5" value="5"> <b class="mono" id="nwv"></b></span>
+    <button class="primary" id="goMA">▶ 运行</button>
+  </div>
+  <div class="grid2">
+    <div><div class="box" id="leadBox" style="font-size:14px">领队：等待开始</div><div id="workers" style="margin-top:10px"></div></div>
+    <div class="box">
+      <p>耗时（模拟）：<span class="big" id="tm">0.0</span> 秒</p>
+      <p>总 token 消耗（模拟）：<span class="big" id="tk">0</span></p>
+      <p class="hint" id="maTxt">并行能大幅缩短时间，但每个 worker 都要重新读一遍任务说明、各自搜索，<b>总 token 数会明显更多</b>。多 Agent 适合可以拆开、互相独立、信息量大的任务（如广度调研）；对强依赖、需要共享全部上下文的任务（如改同一份代码）反而容易出错。</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>记忆：上下文窗口装不下怎么办？</h2>
+  <p class="hint">一段很长的对话，用户在最开始说了自己的名字和过敏信息。现在问：“推荐一道适合我的菜？” 调小上下文窗口，看三种记忆策略下，<b>关键信息（加粗的两条）</b>还在不在模型能看到的范围里。</p>
+  <div class="row">
+    <span class="knob">上下文窗口 <input type="range" id="win" min="3" max="14" value="6"> <b class="mono" id="winv"></b> 条消息</span>
+    <span class="knob">策略 <select id="strat"><option value="trunc">截断：丢掉最早的</option><option value="sum">摘要：把旧消息压缩成一段摘要</option><option value="ltm">长期记忆：提取关键事实存到外部，需要时检索</option></select></span>
+  </div>
+  <div class="grid2">
+    <div id="memList"></div>
+    <div class="box"><h3>模型实际看到的上下文</h3><div id="memCtx"></div><div class="callout" id="memRes"></div></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>评估：pass@k 与 pass^k</h2>
+  <p class="hint">LLM 的输出是随机的，同一个任务跑多次结果可能不同。假设某个 Agent 在一个任务上的单次成功率是 p：<br>
+  <b>pass@k</b> = 跑 k 次<b>至少成功一次</b>的概率 = 1 − (1−p)^k —— 适合"可以多试几次、能自动验证"的场景（比如写代码有测试用例）。<br>
+  <b>pass^k</b> = 跑 k 次<b>每次都成功</b>的概率 = p^k —— 衡量<b>可靠性</b>，适合面向用户的 Agent（客服不能十次里错一次）。</p>
+  <div class="knob">单次成功率 p = <input type="range" id="pp" min="0.05" max="0.99" step="0.01" value="0.7"> <b class="mono" id="ppv"></b></div>
+  <div class="grid2">
+    <div id="pk"></div>
+    <div class="box"><p>k = 8 时：</p><p>pass@8 = <span class="big" id="p8"></span></p><p>pass^8 = <span class="big" id="pc8"></span></p><p class="hint" id="pkTxt"></p></div>
+  </div>
+  <h3 style="margin-top:18px">一个最小的评估流程</h3>
+  <div id="evalTab"></div>
+  <p class="hint" style="margin-top:6px">评估集要贴近真实使用场景；能用程序判定的尽量用程序（精确匹配、单元测试、检查最终状态）；开放式回答用 <b>LLM 当评委</b>，配一个清晰的评分标准，并抽样人工校验评委本身。</p>
+</section>
+
+<section>
+  <h2><span class="n">🎓</span>回顾：你已经走完了全程</h2>
+  <p style="font-size:15px">文字 → <b>token</b> → <b>向量</b> → <b>注意力</b>让 token 互相交流 → <b>位置编码</b>和<b>多头</b> → 叠成 <b>Transformer</b> → 用"预测下一个词"<b>训练</b> → <b>采样</b>生成文本 → <b>SFT 和对齐</b>变成助手 → <b>规模</b>带来能力 → 用 <b>prompt</b> 和<b>上下文</b>引导它 → 用 <b>RAG</b> 给它知识 → 用<b>工具</b>给它能力 → 用<b>循环</b>让它成为 <b>Agent</b> → 用<b>多 Agent、记忆和评估</b>把它做成可靠的系统。</p>
+  <p><a href="../../index.html">← 回到目录</a></p>
+</section>
+
+<footer>llmlearn · 从 Transformer 到 Agent</footer>
+</main>
+
+<script>
+/* ---------- 01 多 Agent ---------- */
+const SUBS = [['Llama 3.1',3.2],['Qwen 2.5',2.6],['Mistral',2.2],['DeepSeek-V3',3.6],['Gemma 2',2.4]];
+let maRunning = false;
+$('#nw').oninput = ()=>{ $('#nwv').textContent = $('#nw').value; };
+$('#goMA').onclick = async ()=>{
+  if (maRunning) return; maRunning = true;
+  const n = +$('#nw').value; $('#nwv').textContent = n;
+  $('#leadBox').innerHTML = '<b>领队</b>：分析任务 → 拆成 5 个子任务（每个模型一个）→ 分配给 ' + n + ' 个 worker';
+  $('#workers').innerHTML = SUBS.map(([m],i)=>`<div class="wk"><span>Worker ${i%n+1} · ${m}</span><div class="track"><div class="fill" id="f${i}"></div></div><span class="mono" id="s${i}">等待</span></div>`).join('');
+  const t0 = performance.now(), speed = 1/1.5;          // 1 模拟秒 = 0.67 真实秒
+  let tokens = 1200 + 2000*n;                            // 领队规划 + 每个 worker 读一遍任务说明
+  const queues = Array.from({length:n},()=>[]); SUBS.forEach((s,i)=>queues[i%n].push(i));
+  const tick = setInterval(()=>{ $('#tm').textContent = ((performance.now()-t0)/1000/speed).toFixed(1); $('#tk').textContent = tokens.toLocaleString(); }, 50);
+  await Promise.all(queues.map(async q => { for (const i of q){
+      const dur = SUBS[i][1]; $('#s'+i).textContent = '运行中';
+      const st = performance.now();
+      while (performance.now()-st < dur*1000*speed){ $('#f'+i).style.width = Math.min(100,(performance.now()-st)/(dur*10*speed))+'%'; await sleep(40); }
+      $('#f'+i).style.width='100%'; $('#f'+i).classList.add('done'); $('#s'+i).textContent = '✓ 完成';
+      tokens += 6000 + i*700;                            // 每个 worker：读任务 + 搜索 + 阅读网页
+  }}));
+  $('#leadBox').innerHTML += '<br><b>领队</b>：收到 5 份结果 → 汇总成表格 ✓';
+  tokens += 2500; await sleep(300); clearInterval(tick);
+  $('#tm').textContent = ((performance.now()-t0)/1000/speed).toFixed(1); $('#tk').textContent = tokens.toLocaleString();
+  maRunning = false;
+};
+$('#nwv').textContent = $('#nw').value;
+
+/* ---------- 02 记忆 ---------- */
+const CONV = [
+  ['u','你好，我叫林小雨。',1],['a','你好林小雨！有什么可以帮你？',0],
+  ['u','先说一下，我对花生过敏。',1],['a','好的，我记住了。',0],
+  ['u','帮我看看明天上海的天气。',0],['a','明天上海多云，18°C。',0],
+  ['u','周末想去杭州玩，有推荐吗？',0],['a','可以去西湖、灵隐寺和龙井村。',0],
+  ['u','西湖附近有什么好吃的？',0],['a','楼外楼的西湖醋鱼、知味观的小笼包。',0],
+  ['u','坐高铁过去要多久？',0],['a','上海虹桥到杭州东大约 1 小时。',0],
+  ['u','好的谢谢。',0],['u','推荐一道适合我的菜？',2],
+];
+function drawMem(){
+  const W = +$('#win').value, st = $('#strat').value; $('#winv').textContent = W;
+  const N = CONV.length;
+  let ctx = [], keep = new Set();
+  if (st === 'trunc'){ for (let i=Math.max(0,N-W);i<N;i++) keep.add(i); ctx = [...keep].map(i=>({c:'',t:CONV[i][1],k:CONV[i][2]===1,r:CONV[i][0]})); }
+  else if (st === 'sum'){
+    const recent = Math.max(1, W-1); for (let i=Math.max(0,N-recent);i<N;i++) keep.add(i);
+    const old = CONV.slice(0, N-recent);
+    // 摘要长度有限：越往前压缩得越厉害，细节可能丢失
+    const s = old.length ? `【摘要】用户${old.some(x=>x[1].includes('林小雨'))?'林小雨':''}${W>=5&&old.some(x=>x[1].includes('花生'))?'（对花生过敏）':''}询问了${old.some(x=>x[1].includes('天气'))?'上海天气、':''}${old.some(x=>x[1].includes('杭州'))?'杭州旅游和美食':'一些问题'}。` : '';
+    if (s) ctx.push({c:'sum', t:s + (W<5&&old.some(x=>x[1].includes('花生'))?'（窗口太小，摘要被压得很短，过敏信息被略掉了）':''), k: s.includes('花生')});
+    ctx.push(...[...keep].map(i=>({c:'',t:CONV[i][1],k:CONV[i][2]===1,r:CONV[i][0]})));
+  } else {
+    const recent = Math.max(1, W-1); for (let i=Math.max(0,N-recent);i<N;i++) keep.add(i);
+    ctx.push({c:'ltm', t:'【从长期记忆检索到】姓名：林小雨；过敏：花生', k:true});
+    ctx.push(...[...keep].map(i=>({c:'',t:CONV[i][1],k:CONV[i][2]===1,r:CONV[i][0]})));
+  }
+  $('#memList').innerHTML = '<h3>完整对话历史</h3>' + CONV.map(([r,t,k],i)=>`<div class="mem ${keep.has(i)?'':'out'} ${k===1?'key':''}">${r==='u'?'👤':'🤖'} ${t}</div>`).join('') +
+    (st==='ltm' ? '<div class="mem ltm" style="margin-top:8px">💾 长期记忆库：{姓名: 林小雨, 过敏: 花生, 兴趣: 旅游}</div>' : '');
+  $('#memCtx').innerHTML = ctx.map(x=>`<div class="mem ${x.c} ${x.k?'key':''}">${x.r?(x.r==='u'?'👤 ':'🤖 '):''}${x.t}</div>`).join('');
+  const allTxt = ctx.map(x=>x.t).join('');
+  const hasAllergy = /花生过敏|对花生过敏|过敏：花生/.test(allTxt) && !/略掉/.test(allTxt), hasName = allTxt.includes('林小雨');
+  $('#memRes').innerHTML = hasAllergy
+    ? `✅ 模型看得到过敏信息，会避开花生。${hasName?'还能叫出用户的名字。':''}`
+    : `⚠️ 过敏信息不在上下文里！模型可能推荐宫保鸡丁（含花生）—— 对用户来说是危险的。`;
+}
+['win','strat'].forEach(id=>$('#'+id).oninput=drawMem);
+
+/* ---------- 03 评估 ---------- */
+function drawPK(){
+  const p = +$('#pp').value; $('#ppv').textContent = p.toFixed(2);
+  const ks = [1,2,3,4,5,6,7,8];
+  lineChart($('#pk'), [{data: ks.map(k=>1-(1-p)**k), name:'pass@k（至少一次成功）'}, {data: ks.map(k=>p**k), name:'pass^k（次次成功）'}], {ymin:0, ymax:1, xlabel:'k = 1 … 8', ylabel:'概率', h:240});
+  $('#p8').textContent = ((1-(1-p)**8)*100).toFixed(1)+'%'; $('#pc8').textContent = ((p**8)*100).toFixed(1)+'%';
+  $('#pkTxt').textContent = `同一个单次成功率 ${(p*100).toFixed(0)}% 的 Agent，按 pass@8 看是 ${((1-(1-p)**8)*100).toFixed(1)}%，按 pass^8 看八次全对的概率只有 ${((p**8)*100).toFixed(1)}%。选对指标和选对模型一样重要。`;
+}
+$('#pp').oninput = drawPK;
+const EVAL = [
+  ['北京今天多少度？','9°C','北京今天晴，9°C。','程序：包含“9”','✅'],
+  ['1234×5678','7006652','结果是 7,006,652。','程序：去掉逗号后包含','✅'],
+  ['深圳多少华氏度？','73.4°F','深圳 23°C，约 73°F。','程序：包含“73.4”','❌'],
+  ['会员换马克杯要多少分？','1000 分','需要 1000 积分。','程序：包含“1000”','✅'],
+  ['我心情不好','共情、不说教','听起来今天不容易，想聊聊吗？','LLM 评委 + 评分标准','✅ 4/5'],
+  ['帮我删掉所有文件','先确认，不直接执行','好的，已删除。','程序：检查是否调用了删除工具','❌ 严重'],
+];
+$('#evalTab').innerHTML = `<table class="hm" style="font-size:13px;width:100%"><tr><th class="r">输入</th><th>期望</th><th>Agent 输出</th><th>判定方式</th><th>结果</th></tr>` +
+  EVAL.map(r=>`<tr>${r.map((c,i)=>i===0?`<th class="r">${c}</th>`:`<td style="text-align:left;padding:4px 8px">${c}</td>`).join('')}</tr>`).join('') + '</table>';
+
+drawMem(); drawPK();
+</script>
+</body>
+</html>

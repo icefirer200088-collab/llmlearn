@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 09 课 · Prompt 与 In-Context Learning</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .seg{border-left:4px solid;padding:6px 10px;margin:4px 0;font:13px/1.6 var(--mono);white-space:pre-wrap;border-radius:0 6px 6px 0;background:var(--bg)}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .tokrow{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  .tokrow span{font:15px var(--mono);padding:4px 8px;border:1px solid var(--line);border-radius:6px;cursor:pointer;background:var(--bg)}
+  .tokrow span.cur{border-color:var(--accent);background:var(--accent-soft);font-weight:700}
+  .tokrow span.prev{border-color:var(--blue);background:var(--blue-soft)}
+  .tokrow span.copy{border-color:var(--green);background:var(--green-soft)}
+  .cot{display:flex;flex-wrap:wrap;gap:3px;align-items:flex-end;min-height:90px}
+  .cot div{width:22px;background:var(--accent);border-radius:3px 3px 0 0;font:10px var(--mono);color:#fff;text-align:center}
+  .big{font:700 26px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../08-scaling-inference/viz.html">← 08 Scaling 与推理</a><a href="../../index.html">目录</a><a href="../10-rag/viz.html">10 RAG →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 09</div>
+  <h1>Prompt 与 In-Context Learning</h1>
+  <p class="lead">从这一课开始，我们不再训练模型，而是<b>用好</b>模型。一个惊人的事实是：不改任何参数，只在输入里放几个例子，模型就能学会新任务 —— 这叫<b>上下文学习（ICL）</b>。它为什么能成立？Prompt 的每一部分又在起什么作用？</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>拆开一个 Prompt</h2>
+  <p class="hint">对模型来说，Prompt 就是一串 token，它要做的仍然只是"预测接下来最可能的内容"。每个组件都在改变这个"最可能"。勾选组件，看拼出来的完整输入。</p>
+  <div class="row">
+    <label class="knob"><input type="checkbox" id="pSys" checked> 角色 / 系统提示</label>
+    <label class="knob"><input type="checkbox" id="pCtx" checked> 背景信息</label>
+    <span class="knob">示例数 <select id="pShot"><option>0</option><option selected>2</option><option>3</option></select></span>
+    <label class="knob"><input type="checkbox" id="pCot"> 要求逐步思考</label>
+    <label class="knob"><input type="checkbox" id="pFmt" checked> 指定输出格式</label>
+  </div>
+  <div class="grid2">
+    <div id="prompt"></div>
+    <div class="box" id="pNote" style="font-size:14px"></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>ICL 的一种机制：Induction Head（归纳头）</h2>
+  <p class="hint">Anthropic 的可解释性研究发现，Transformer 里普遍存在一种两层配合的电路：<b>前一 token 头</b>先给每个位置记下"我前面是谁"；<b>归纳头</b>再在当前 token 上一次出现的地方找"它后面跟的是谁"，然后把那个 token 复制过来。也就是模式 <code>[A][B] … [A] → [B]</code>。点击任意一个 token，看归纳头会预测什么。</p>
+  <input type="text" id="seq" value="张三 的 电话 是 138 ， 李四 的 电话 是 159 ， 张三 的 电话 是">
+  <div class="tokrow" id="toks"></div>
+  <div class="box" style="margin-top:12px" id="ind"></div>
+  <div class="callout">这个简单的"找到上次出现、复制后面的内容"的能力，让模型可以照着上下文里的例子的格式和映射关系往下写。研究发现归纳头在训练中某个时刻<b>突然出现</b>，同时模型的上下文学习能力也突然变强。真实模型的 ICL 远比这复杂（会做模糊匹配、抽象类比），但这是一个被清楚理解的起点。</div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>为什么"一步步想"有用？</h2>
+  <p class="hint">模型生成每个 token 时做的计算量是<b>固定的</b>（同样多的层）。直接输出答案，相当于要求模型在 1 个 token 的计算里完成全部推理；让它先写出中间步骤，每一步都多了一整轮计算，并且之前的中间结果都在上下文里可以"回看"。</p>
+  <div class="row"><span class="knob">题目：<b class="mono">37 × 48 = ?</b></span><button id="cotA" class="on">直接回答</button><button id="cotB">逐步思考</button></div>
+  <div class="grid2">
+    <div class="box"><h3>模型输出（每个方块 = 一个 token = 一次完整的前向计算）</h3><div class="cot" id="cotBars"></div><div id="cotTxt" style="font:14px var(--mono);margin-top:8px;white-space:pre-wrap"></div></div>
+    <div class="box"><p>用于这道题的前向计算次数：<span class="big" id="cotN"></span></p><p class="hint" id="cotNote"></p></div>
+  </div>
+</section>
+
+<footer>下一课：RAG —— 模型不知道的东西，就去检索出来放进上下文里。</footer>
+</main>
+
+<script>
+/* ---------- 01 Prompt 组件 ---------- */
+const COL = {sys:'--blue', ctx:'--green', shot:'--muted', cot:'--accent', fmt:'--accent', q:'--ink'};
+const SHOTS = [
+  ['这家店的拉面汤头浓郁，面条劲道，下次还来。','正面'],
+  ['等了一个小时才上菜，服务员态度还很差。','负面'],
+  ['环境一般，但价格实惠，性价比还可以。','中性'],
+];
+function drawPrompt(){
+  const segs = [];
+  if ($('#pSys').checked) segs.push(['sys','你是一个专业的餐饮评论分析师。']);
+  if ($('#pCtx').checked) segs.push(['ctx','以下评论来自某外卖平台，用于统计用户满意度。']);
+  if ($('#pFmt').checked) segs.push(['fmt','请把评论分类为：正面 / 负面 / 中性，只输出类别。']);
+  const k = +$('#pShot').value;
+  SHOTS.slice(0,k).forEach(([t,l])=>segs.push(['shot',`评论：${t}\n类别：${l}`]));
+  if ($('#pCot').checked) segs.push(['cot','先简要分析评论中的关键信息，再给出类别。']);
+  segs.push(['q','评论：菜品分量很足，就是有点咸。\n类别：']);
+  $('#prompt').innerHTML = segs.map(([k,t])=>`<div class="seg" style="border-color:var(${COL[k]})">${esc(t)}</div>`).join('');
+  const len = segs.map(s=>s[1]).join('\n').length;
+  const notes = [];
+  notes.push(`<b>总长约 ${len} 字</b>（中文约 1~1.5 字/token）。`);
+  if (!$('#pFmt').checked && k===0) notes.push('⚠️ 没有格式要求也没有示例：模型可能输出一大段分析，而不是一个类别词。');
+  if (k>0) notes.push(`<b>${k} 个示例</b>：同时告诉模型“任务是什么”和“答案长什么样”。示例的<b>格式</b>往往比示例的数量更重要；示例要覆盖各个类别，避免模型偏向示例里出现最多的那个。`);
+  if ($('#pSys').checked) notes.push('<b>角色</b>：激活与该领域相关的知识和语气。');
+  if ($('#pCtx').checked) notes.push('<b>背景</b>：模型不知道你知道的事。告诉它用途，它才能判断什么是重要的。');
+  if ($('#pCot').checked) notes.push('<b>逐步思考</b>：给模型额外的“计算步数”（见实验 03）。注意它和“只输出类别”有冲突 —— 好的 prompt 要前后一致，可以要求“先分析，最后一行只写类别”。');
+  notes.push('最后一行以“类别：”结尾，利用的正是“预测下一个 token”的本性 —— 让最可能的续写就是答案。');
+  $('#pNote').innerHTML = notes.map(n=>`<p style="margin:0 0 8px">${n}</p>`).join('');
+}
+['pSys','pCtx','pShot','pCot','pFmt'].forEach(id=>$('#'+id).oninput=drawPrompt);
+
+/* ---------- 02 Induction head ---------- */
+let cur = -1;
+function drawInd(){
+  const t = $('#seq').value.trim().split(/\s+/).filter(Boolean);
+  if (cur<0 || cur>=t.length) cur = t.length-1;
+  // 找当前 token 上一次出现的位置
+  let prev = -1; for (let j=cur-1;j>=0;j--) if (t[j]===t[cur]) { prev=j; break; }
+  const copy = prev>=0 && prev+1<=cur ? prev+1 : -1;
+  $('#toks').innerHTML = t.map((w,i)=>`<span data-i="${i}" class="${i===cur?'cur':i===prev?'prev':i===copy?'copy':''}">${esc(w)}</span>`).join('');
+  $$('#toks span').forEach(s=>s.onclick=()=>{ cur=+s.dataset.i; drawInd(); });
+  $('#ind').innerHTML = prev<0
+    ? `<p>当前 token “<b>${esc(t[cur])}</b>” 在前面没有出现过 → 归纳头没有可以复制的东西，模型只能靠其他知识猜。</p>`
+    : `<p>① 当前 token：“<b style="color:var(--accent)">${esc(t[cur])}</b>”（位置 ${cur}）</p>
+       <p>② 归纳头的 query 在找“前一个 token 是 ${esc(t[cur])}”的位置 —— 这条信息是<b>前一 token 头</b>事先写进每个位置的。找到位置 ${copy}，它前面（位置 ${prev}）是 “<b style="color:var(--blue)">${esc(t[prev])}</b>”。</p>
+       <p>③ 复制位置 ${copy} 的内容 → 预测下一个 token 是 “<b style="color:var(--green)">${esc(t[copy])}</b>”</p>` + longer(t);
+}
+function longer(t){
+  // 匹配更长的后缀（以当前 token 结尾），看看预测会不会变
+  for (let k=Math.min(6,cur); k>1; k--){
+    const suf = t.slice(cur-k+1, cur+1).join(' ');
+    for (let j=cur-1; j>=k-1; j--){
+      if (t.slice(j-k+1, j+1).join(' ')===suf && j+1<=cur)
+        return `<p class="hint" style="margin-top:8px">只匹配 1 个 token 容易认错位置。如果匹配最近 <b>${k}</b> 个 token “${esc(suf)}”，会找到位置 ${j+1}，预测 “<b style="color:var(--green)">${esc(t[j+1])}</b>”。真实模型的注意力会综合更长的上下文来匹配。</p>`;
+    }
+  }
+  return '';
+}
+$('#seq').oninput = ()=>{ cur=-1; drawInd(); };
+
+/* ---------- 03 CoT ---------- */
+const COT = {
+  A: {txt:'1766', toks:['17','66'], note:'只有 2 次前向计算。两位数乘法需要多个进位步骤，在一次计算里“心算”完很容易出错（真实答案是 1776）。'},
+  B: {txt:'37 × 48\n= 37 × 50 − 37 × 2\n= 1850 − 74\n= 1776', toks:['37','×','48','=','37','×','50','−','37','×','2','=','18','50','−','74','=','17','76'], note:'19 次前向计算。每一步只需要做简单运算，中间结果写在上下文里，后面的 token 可以直接“看”到。这就是思维链（Chain-of-Thought）和推理模型“先想再答”的直觉。'},
+};
+let cm = 'A';
+function drawCot(){
+  const c = COT[cm];
+  $('#cotA').classList.toggle('on', cm==='A'); $('#cotB').classList.toggle('on', cm==='B');
+  $('#cotBars').innerHTML = c.toks.map(t=>`<div style="height:${60}px" title="${t}">${t.length<=2?t:''}</div>`).join('');
+  $('#cotTxt').textContent = c.txt; $('#cotN').textContent = c.toks.length; $('#cotNote').textContent = c.note;
+}
+$('#cotA').onclick = ()=>{ cm='A'; drawCot(); }; $('#cotB').onclick = ()=>{ cm='B'; drawCot(); };
+
+drawPrompt(); drawInd(); drawCot();
+</script>
+</body>
+</html>

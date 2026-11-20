@@ -72,4 +72,4 @@ x = E[token_id]          # 就是取第 token_id 行，没有任何计算
 - OpenAI `tiktoken` 库：可以直接看 GPT 系列如何切分你的文本
 
 ---
-⬅️ [返回目录](../../README.md) ｜ 下一课：Self-Attention ➡️
+⬅️ [返回目录](../../README.md) ｜ [02 Self-Attention](../02-self-attention/) ➡️

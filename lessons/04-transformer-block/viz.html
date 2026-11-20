@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 04 课 · Transformer Block</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .blk{cursor:pointer}
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0}
+  .pc td{padding:3px 10px;font:13px var(--mono)} .pc td:last-child{text-align:right}
+  .pc tr.tot td{border-top:1px solid var(--line);font-weight:700}
+  input[type=number]{width:90px;font:14px var(--mono);padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../03-multihead-position/viz.html">← 03 多头 + 位置编码</a><a href="../../index.html">目录</a><a href="../05-mini-gpt/viz.html">05 mini-GPT →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 04</div>
+  <h1>Transformer Block：把零件拼起来</h1>
+  <p class="lead">一个 Transformer 层 = <b>注意力</b>（token 之间交流信息）+ <b>FFN</b>（每个 token 自己"思考"）+ <b>残差连接</b> + <b>LayerNorm</b>。GPT 就是把这个块叠几十上百层。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>单步走过一个 Block（Pre-LN 结构）</h2>
+  <p class="hint">输入 5 个 token，跟踪第 <b id="trk">3</b> 个 token 的向量（8 维）。每点一次"下一步"，数据往上流一格。注意中间那条贯穿到底的<b>残差流</b>：每个子层只是往上面"加一点东西"。</p>
+  <div class="grid2">
+    <svg id="arch" viewBox="0 0 360 470" style="width:100%;max-width:380px"></svg>
+    <div>
+      <div class="row"><button class="primary" id="next">下一步 ↑</button><button id="reset">重置</button>
+        <span class="knob">跟踪 token <select id="tsel"><option value="0">0 我</option><option value="1">1 爱</option><option value="2" selected>2 学习</option><option value="3">3 大</option><option value="4">4 模型</option></select></span></div>
+      <h3 style="margin-top:14px" id="stTitle"></h3>
+      <p id="stDesc" style="font-size:14px"></p>
+      <div class="box"><h3>当前向量</h3><div id="stVec"></div><h3 style="margin-top:10px">残差流的长度 ‖x‖ 随步骤变化</h3><div id="normChart"></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>LayerNorm：把每个向量拉回"标准尺寸"</h2>
+  <p class="hint"><code>LN(x) = γ · (x − 均值) / 标准差 + β</code>。对<b>每个 token 自己的向量</b>归一化（不跨 token）。拖动"放大"滑块：输入变大 10 倍，LN 输出不变 —— 深层网络因此不容易数值爆炸。</p>
+  <div class="row"><span class="knob">输入放大 <input type="range" id="lnScale" min="0.1" max="10" step="0.1" value="1"> <b class="mono" id="lnSv"></b></span><span class="knob">平移 <input type="range" id="lnShift" min="-5" max="5" step="0.1" value="0"> <b class="mono" id="lnBv"></b></span></div>
+  <div class="grid2">
+    <div class="box"><h3>输入 x</h3><svg id="lnIn" viewBox="0 0 420 150" style="width:100%"></svg><p class="mono" id="lnStatIn" style="font-size:13px;margin:4px 0 0"></p></div>
+    <div class="box"><h3>LN(x)（γ=1, β=0）</h3><svg id="lnOut" viewBox="0 0 420 150" style="width:100%"></svg><p class="mono" id="lnStatOut" style="font-size:13px;margin:4px 0 0"></p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>FFN：先升维 4 倍，过激活函数，再降回来</h2>
+  <p class="hint"><code>FFN(x) = W₂ · GELU(W₁·x)</code>，中间层宽度通常是 4·d_model。注意力负责"搬运信息"，FFN 负责"加工信息"—— 研究发现大量事实性知识（"巴黎是法国首都"）存储在 FFN 里。</p>
+  <div class="grid2">
+    <div class="box"><h3>激活函数</h3><svg id="act" viewBox="0 0 420 220" style="width:100%"></svg></div>
+    <div class="box"><h3>中间层 32 个神经元的激活（GELU 后），随机输入 <button id="ffnRe" style="padding:2px 8px;font-size:12px">换一个</button></h3><svg id="neur" viewBox="0 0 420 180" style="width:100%"></svg><p class="hint" id="neurTxt"></p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>参数都在哪？—— 参数量计算器</h2>
+  <p class="hint">每层：注意力 4·d²（W<sub>Q</sub>,W<sub>K</sub>,W<sub>V</sub>,W<sub>O</sub>）+ FFN 8·d²（升维和降维各 4·d²）≈ <b>12·d²</b>。再加上 embedding 表 V·d。</p>
+  <div class="row">
+    <button data-p="768,12,50257">GPT-2 small</button><button data-p="1600,48,50257">GPT-2 XL</button><button data-p="4096,32,32000">Llama-2 7B*</button><button data-p="12288,96,50257">GPT-3 175B</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <span class="knob">d_model <input type="number" id="pd" value="768"></span>
+    <span class="knob">层数 L <input type="number" id="pl" value="12"></span>
+    <span class="knob">词表 V <input type="number" id="pv" value="50257"></span>
+  </div>
+  <table class="pc" style="margin-top:12px" id="ptab"></table>
+  <p class="hint" style="margin-top:8px">* Llama 的 FFN 用 SwiGLU（3 个矩阵、中间宽度 ≈ 2.7d），实际 ≈ 6.7B；这里按标准 GPT 结构估算，数量级一致。</p>
+</section>
+
+<footer>下一课：从零写一个 mini-GPT，并在浏览器里亲眼看它训练。</footer>
+</main>
+
+<script>
+/* ---------- 01 单步 Block ---------- */
+const D = 8, TOK = ['我','爱','学习','大','模型'];
+const R = rng(11);
+const X0 = TOK.map(()=>Array.from({length:D}, ()=>R.normal()));
+const W = { q:randMat(D,D,R,.4), k:randMat(D,D,R,.4), v:randMat(D,D,R,.4), o:randMat(D,D,R,.4), w1:randMat(D,4*D,R,.35), w2:randMat(4*D,D,R,.18) };
+const ln = v => { const m = v.reduce((a,b)=>a+b)/v.length, s = Math.sqrt(v.reduce((a,b)=>a+(b-m)**2,0)/v.length+1e-5); return v.map(x=>(x-m)/s); };
+const gelu = x => 0.5*x*(1+Math.tanh(Math.sqrt(2/Math.PI)*(x+0.044715*x**3)));
+function forward(){
+  const st = [];
+  st.push({k:'in', X:X0});
+  const L1 = X0.map(ln); st.push({k:'ln1', X:L1});
+  const Q=matmul(L1,W.q), K=matmul(L1,W.k), V=matmul(L1,W.v);
+  const A = matmul(Q,T(K)).map((r,i)=>softmax(r.map((v,j)=>j>i?-Infinity:v/Math.sqrt(D))));
+  const At = matmul(matmul(A,V), W.o); st.push({k:'attn', X:At, A});
+  const X1 = X0.map((r,i)=>r.map((v,j)=>v+At[i][j])); st.push({k:'res1', X:X1});
+  const L2 = X1.map(ln); st.push({k:'ln2', X:L2});
+  const F = matmul(matmul(L2,W.w1).map(r=>r.map(gelu)), W.w2); st.push({k:'ffn', X:F});
+  const X2 = X1.map((r,i)=>r.map((v,j)=>v+F[i][j])); st.push({k:'res2', X:X2});
+  return st;
+}
+const STEPS = forward();
+const INFO = {
+  in:  ['① 输入 x（来自 embedding + 位置编码，或上一层的输出）','这就是“残差流”的起点。后面的子层都只读取它、再往上加东西。'],
+  ln1: ['② LayerNorm','先把向量标准化（均值 0、方差 1），再送进注意力。这叫 Pre-LN，比原论文的 Post-LN 训练更稳定，GPT-2 之后几乎都用它。'],
+  attn:['③ 多头因果自注意力','token 之间交换信息：当前 token 从它前面的 token 里“搬”来相关内容。因为是因果的，第 0 个 token 只能看自己。'],
+  res1:['④ 残差相加 x = x + Attn(LN(x))','把注意力的结果加回残差流。梯度可以沿着这条“高速公路”直接流回底层，所以能训练上百层的网络。'],
+  ln2: ['⑤ 第二个 LayerNorm','同样先标准化，再送进 FFN。'],
+  ffn: ['⑥ FFN（8 → 32 → 8，GELU）','每个 token 独立地过同一个两层 MLP。没有 token 之间的交流 —— 这是“思考/查知识”的步骤。'],
+  res2:['⑦ 残差相加 x = x + FFN(LN(x))','一层结束！输出形状和输入完全一样 [T × d]，所以可以直接送进下一层，叠 N 次。'],
+};
+let step = 0;
+function drawArch(){
+  const acc=cssVar('--accent'), ink=cssVar('--ink'), mut=cssVar('--muted'), soft=cssVar('--accent-soft'), blue=cssVar('--blue');
+  const k = STEPS[step].k;
+  const box = (id,x,y,w,h,label) => { const on = k===id; return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${on?soft:'none'}" stroke="${on?acc:mut}" stroke-width="${on?2.5:1}"/><text x="${x+w/2}" y="${y+h/2+5}" text-anchor="middle" font-size="13" font-weight="${on?700:400}" fill="${on?acc:ink}">${label}</text>`; };
+  const plus = (id,cx,cy) => { const on=k===id; return `<circle cx="${cx}" cy="${cy}" r="13" fill="${on?acc:cssVar('--card')}" stroke="${on?acc:ink}"/><text x="${cx}" y="${cy+5}" text-anchor="middle" font-size="16" fill="${on?'#fff':ink}">+</text>`; };
+  let s = `<defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="${mut}"/></marker></defs>`;
+  // 残差主干
+  s += `<line x1="100" y1="440" x2="100" y2="20" stroke="${blue}" stroke-width="5" stroke-opacity=".35"/>`;
+  s += `<text x="20" y="250" font-size="12" fill="${blue}" transform="rotate(-90 20 250)">残差流 residual stream</text>`;
+  s += box('in',50,420,100,34,'输入 x');
+  // 注意力分支
+  s += `<path d="M100 385 H 230 V 365" fill="none" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += box('ln1',180,330,110,32,'LayerNorm');
+  s += `<line x1="235" y1="330" x2="235" y2="312" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += box('attn',170,270,130,40,'Masked MHA');
+  s += `<path d="M235 270 V 245 H 116" fill="none" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += plus('res1',100,245);
+  // FFN 分支
+  s += `<path d="M100 210 H 230 V 190" fill="none" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += box('ln2',180,155,110,32,'LayerNorm');
+  s += `<line x1="235" y1="155" x2="235" y2="137" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += box('ffn',170,95,130,40,'FFN');
+  s += `<path d="M235 95 V 70 H 116" fill="none" stroke="${mut}" marker-end="url(#ar)"/>`;
+  s += plus('res2',100,70);
+  s += `<text x="100" y="20" text-anchor="middle" font-size="12" fill="${mut}">→ 下一层（× N）</text>`;
+  s += `<rect x="160" y="80" width="190" height="300" rx="12" fill="none" stroke="${mut}" stroke-dasharray="4 4" stroke-opacity=".5"/>`;
+  $('#arch').innerHTML = s;
+}
+function drawStep(){
+  const t = +$('#tsel').value; $('#trk').textContent = t;
+  const s = STEPS[step], [title, desc] = INFO[s.k];
+  $('#stTitle').textContent = title; $('#stDesc').textContent = desc;
+  heatmap($('#stVec'), [s.X[t]], {rows:[TOK[t]], cols:[...Array(D).keys()].map(i=>'d'+i), max:3});
+  if (s.A) $('#stDesc').innerHTML += `<br>“${TOK[t]}” 的注意力：${s.A[t].map((w,j)=>j<=t?`${TOK[j]} ${(w*100).toFixed(0)}%`:'').filter(Boolean).join('，')}`;
+  const res = ['in','res1','res2'], norms = STEPS.slice(0,step+1).filter(x=>res.includes(x.k)).map(x=>Math.hypot(...x.X[t]));
+  lineChart($('#normChart'), [{data: norms.length>1?norms:[norms[0],norms[0]]}], {h:120, w:420, ymin:0, xlabel:'输入 → 注意力后 → FFN 后'});
+  $('#next').disabled = step === STEPS.length-1;
+  drawArch();
+}
+$('#next').onclick = ()=>{ step++; drawStep(); };
+$('#reset').onclick = ()=>{ step=0; drawStep(); };
+$('#tsel').oninput = drawStep;
+
+/* ---------- 02 LayerNorm ---------- */
+const lnBase = (()=>{ const r = rng(5); return Array.from({length:12},()=>r.normal()*1.2+0.6); })();
+function vecSvg(el, v, max){
+  const w=420, h=150, bw=w/v.length;
+  let s = `<line x1="0" y1="75" x2="${w}" y2="75" stroke="${cssVar('--line')}"/>`;
+  v.forEach((x,i)=>{ const hh = Math.min(70, Math.abs(x)/max*70); s += `<rect x="${i*bw+3}" y="${x>=0?75-hh:75}" width="${bw-6}" height="${hh}" fill="${x>=0?cssVar('--accent'):cssVar('--blue')}"/>`; });
+  el.innerHTML = s;
+}
+const stat = v => { const m=v.reduce((a,b)=>a+b)/v.length; return [m, Math.sqrt(v.reduce((a,b)=>a+(b-m)**2,0)/v.length)]; };
+function drawLN(){
+  const sc=+$('#lnScale').value, sh=+$('#lnShift').value; $('#lnSv').textContent='×'+sc.toFixed(1); $('#lnBv').textContent=(sh>=0?'+':'')+sh.toFixed(1);
+  const x = lnBase.map(v=>v*sc+sh), y = ln(x);
+  vecSvg($('#lnIn'), x, 20); vecSvg($('#lnOut'), y, 3);
+  const [m1,s1]=stat(x), [m2,s2]=stat(y);
+  $('#lnStatIn').textContent = `均值 ${m1.toFixed(2)}   标准差 ${s1.toFixed(2)}`;
+  $('#lnStatOut').textContent = `均值 ${m2.toFixed(2)}   标准差 ${s2.toFixed(2)}`;
+}
+['lnScale','lnShift'].forEach(id=>$('#'+id).oninput=drawLN);
+
+/* ---------- 03 FFN ---------- */
+function drawAct(){
+  const w=420,h=220, px=x=>w/2+x*50, py=y=>h-50-y*45;
+  const mut=cssVar('--muted'), acc=cssVar('--accent'), blue=cssVar('--blue');
+  let s = `<line x1="0" y1="${py(0)}" x2="${w}" y2="${py(0)}" stroke="${cssVar('--line')}"/><line x1="${px(0)}" y1="0" x2="${px(0)}" y2="${h}" stroke="${cssVar('--line')}"/>`;
+  const path = f => Array.from({length:161},(_,i)=>{ const x=-4+i*0.05; return `${i?'L':'M'}${px(x).toFixed(1)} ${py(f(x)).toFixed(1)}`; }).join(' ');
+  s += `<path d="${path(x=>Math.max(0,x))}" fill="none" stroke="${blue}" stroke-width="2" stroke-dasharray="5 4"/>`;
+  s += `<path d="${path(gelu)}" fill="none" stroke="${acc}" stroke-width="2.5"/>`;
+  s += `<text x="${w-10}" y="20" text-anchor="end" font-size="12" fill="${acc}">GELU（GPT 系列）</text><text x="${w-10}" y="36" text-anchor="end" font-size="12" fill="${blue}">ReLU（原版 Transformer）</text>`;
+  s += `<text x="10" y="${h-8}" font-size="11" fill="${mut}">负数几乎被关掉 → 神经元“激活/不激活”，像一个个特征检测器</text>`;
+  $('#act').innerHTML = s;
+}
+let ffnSeed = 1;
+function drawNeur(){
+  const r = rng(ffnSeed*97), x = Array.from({length:8},()=>r.normal());
+  const h = matmul([x], randMat(8,32,rng(3),.5))[0].map(gelu);
+  const w=420, H=180, bw=w/32, mx=Math.max(...h.map(Math.abs),1);
+  let s = `<line x1="0" y1="140" x2="${w}" y2="140" stroke="${cssVar('--line')}"/>`;
+  h.forEach((v,i)=>{ const hh=Math.abs(v)/mx*120; s += `<rect x="${i*bw+2}" y="${v>=0?140-hh:140}" width="${bw-4}" height="${Math.max(hh,1)}" fill="${v>0.05?cssVar('--accent'):cssVar('--muted')}" fill-opacity="${v>0.05?1:.4}"/>`; });
+  $('#neur').innerHTML = s;
+  const on = h.filter(v=>v>0.05).length;
+  $('#neurTxt').textContent = `${on} / 32 个神经元被明显激活。不同输入点亮不同的神经元组合。`;
+}
+$('#ffnRe').onclick = ()=>{ ffnSeed++; drawNeur(); };
+
+/* ---------- 04 参数计算 ---------- */
+const fmtN = n => n>=1e9 ? (n/1e9).toFixed(2)+' B' : n>=1e6 ? (n/1e6).toFixed(1)+' M' : n.toLocaleString();
+function drawParams(){
+  const d=+$('#pd').value, L=+$('#pl').value, V=+$('#pv').value;
+  const attn = 4*d*d*L, ffn = 8*d*d*L, emb = V*d, lnp = 4*d*L;
+  const tot = attn+ffn+emb+lnp;
+  const row = (n,v,note='') => `<tr><td>${n}</td><td style="color:var(--muted)">${note}</td><td>${fmtN(v)}</td><td style="color:var(--muted)">${(v/tot*100).toFixed(1)}%</td></tr>`;
+  $('#ptab').innerHTML = row('注意力', attn, `4·d²·L`) + row('FFN', ffn, `8·d²·L`) + row('Embedding（输入输出共享）', emb, 'V·d') + row('LayerNorm', lnp, '4·d·L') +
+    `<tr class="tot"><td>合计</td><td></td><td>${fmtN(tot)}</td><td></td></tr>`;
+}
+['pd','pl','pv'].forEach(id=>$('#'+id).oninput=drawParams);
+$$('button[data-p]').forEach(b=>b.onclick=()=>{ const [d,l,v]=b.dataset.p.split(','); $('#pd').value=d; $('#pl').value=l; $('#pv').value=v; drawParams(); });
+
+drawStep(); drawLN(); drawAct(); drawNeur(); drawParams();
+</script>
+</body>
+</html>

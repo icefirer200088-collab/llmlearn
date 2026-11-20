@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 06 课 · 采样与生成、KV Cache</title>
+<link rel="stylesheet" href="../../assets/lesson.css">
+<script src="../../assets/common.js"></script>
+<style>
+  .knob{display:flex;align-items:center;gap:8px;font-size:14px;margin:6px 0}
+  .knob input[type=range]{width:200px}
+  .gen{font-size:22px;min-height:44px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .gen .n{color:var(--accent);font-weight:700}
+  .kv{display:grid;gap:3px}
+  .kv div{height:20px;border-radius:3px;background:var(--line);font:10px var(--mono);display:flex;align-items:center;justify-content:center;color:var(--muted)}
+  .kv div.cached{background:var(--blue-soft);color:var(--blue)}
+  .kv div.comp{background:var(--accent);color:#fff}
+  input[type=number]{width:80px;font:14px var(--mono);padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+  .big{font:700 28px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+<nav class="top"><a href="../05-mini-gpt/viz.html">← 05 mini-GPT</a><a href="../../index.html">目录</a><a href="../07-alignment/viz.html">07 对齐 →</a></nav>
+<header>
+  <div class="tag">llmlearn · Lesson 06</div>
+  <h1>采样与生成：从概率分布到一段话</h1>
+  <p class="lead">模型每一步只输出"下一个 token 的概率分布"。<b>选哪个</b>由解码策略决定 —— 同一个模型，换个采样参数，可以从呆板变得天马行空。生成又是一个 token 一个 token 进行的，<b>KV Cache</b> 让这个过程快了几十倍。</p>
+</header>
+
+<section>
+  <h2><span class="n">01</span>温度、Top-k、Top-p</h2>
+  <p class="hint">上文："今天天气真"，模型给出下面 10 个候选的 logits（分数）。依次调整三个旋钮，看最终的采样分布怎么变。灰色的候选被过滤掉了。</p>
+  <div class="grid2">
+    <div>
+      <div class="knob">温度 T <input type="range" id="temp" min="0.05" max="3" step="0.05" value="1"> <b class="mono" id="tv"></b></div>
+      <div class="knob">Top-k <input type="range" id="topk" min="1" max="10" value="10"> <b class="mono" id="kv"></b></div>
+      <div class="knob">Top-p <input type="range" id="topp" min="0.05" max="1" step="0.05" value="1"> <b class="mono" id="pv"></b></div>
+      <div class="row" style="margin:10px 0"><button data-pre="greedy">贪心（T→0）</button><button data-pre="std">默认（T=1）</button><button data-pre="creative">创意（T=1.3, p=0.95）</button><button data-pre="safe">稳妥（T=0.7, k=3）</button></div>
+      <div class="callout" id="expl"></div>
+    </div>
+    <div class="box"><h3>最终采样分布</h3><div id="dist"></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="samp">采样 50 次</button><span class="hint" style="margin:0" id="sampTxt"></span></div>
+      <div id="sampRes" style="margin-top:8px"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>自回归生成：一次一个 token</h2>
+  <p class="hint">生成 = 循环做：把当前所有文本喂给模型 → 得到下一个 token 的分布 → 按上面的策略采样一个 → 拼到末尾 → 重复，直到遇到结束符。下面用一个玩具语言模型（手写的转移表）演示，温度用的是上面设置的值。</p>
+  <div class="row"><button class="primary" id="g1">生成下一个 token</button><button id="gAll">一直生成到结束</button><button id="gR">重置</button></div>
+  <div class="gen" id="genOut" style="margin-top:10px"></div>
+  <div class="box" style="margin-top:10px"><h3 id="gTitle">下一步的候选分布</h3><div id="gDist"></div></div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>KV Cache：别重复计算已经算过的东西</h2>
+  <p class="hint">生成第 t 个 token 时，注意力需要前面所有 token 的 K 和 V。但前面 token 的 K、V <b>不会变</b>（因果掩码！）。不缓存的话，每一步都要把所有 token 的 K、V 从头算一遍；缓存之后，每步只算<b>新 token 那一行</b>。</p>
+  <div class="row"><button class="primary" id="kvStep">生成下一个 token</button><button id="kvReset">重置</button><span style="flex:1"></span>
+    <div class="stat" id="cNo">0<span>不缓存：累计计算 K/V 行数</span></div><div class="stat" id="cYes">0<span>KV Cache：累计行数</span></div></div>
+  <div class="grid2">
+    <div class="box"><h3>不缓存（橙 = 本步重新计算）</h3><div class="kv" id="kvNo"></div></div>
+    <div class="box"><h3>有 KV Cache（蓝 = 从缓存读取，橙 = 新算）</h3><div class="kv" id="kvYes"></div></div>
+  </div>
+  <div class="callout">生成 n 个 token：不缓存要算 1+2+…+n = n(n+1)/2 行，KV Cache 只要 n 行。n = 1000 时差 500 倍。代价是<b>显存</b>：要把每一层、每个 token 的 K 和 V 都存下来。</div>
+
+  <h3 style="margin-top:22px">KV Cache 显存计算器</h3>
+  <p class="hint">显存 = 2（K 和 V）× 层数 × KV 头数 × 每头维度 × 序列长度 × batch × 每个数的字节数</p>
+  <div class="row">
+    <button data-m="32,32,128">Llama-2 7B（MHA）</button><button data-m="80,8,128">Llama-3 70B（GQA, 8 组）</button><button data-m="32,8,128">Llama-3 8B（GQA）</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <span class="knob">层数 <input type="number" id="ml" value="32"></span><span class="knob">KV 头数 <input type="number" id="mh" value="32"></span><span class="knob">头维度 <input type="number" id="md" value="128"></span>
+    <span class="knob">序列长度 <input type="number" id="ms" value="4096"></span><span class="knob">batch <input type="number" id="mb" value="1"></span>
+    <span class="knob">精度 <select id="mp"><option value="2">FP16 (2B)</option><option value="1">INT8 (1B)</option><option value="0.5">INT4 (0.5B)</option></select></span>
+  </div>
+  <p>KV Cache 需要 <span class="big" id="mem"></span> <span class="hint" id="memTxt"></span></p>
+</section>
+
+<footer>下一课：预训练 → SFT → RLHF / DPO —— 一个只会"续写"的模型，怎么变成会"对话"的助手？</footer>
+</main>
+
+<script>
+/* ---------- 01 采样参数 ---------- */
+const CANDS = ['好','不错','晴朗','热','冷','棒','糟糕','差','蓝','香蕉'];
+const LOGITS = [4.0, 3.3, 2.8, 2.5, 2.2, 1.5, 1.0, 0.8, -1.0, -3.0];
+function decode(logits, T, k, p){
+  let probs = softmax(logits, Math.max(T, 1e-3));
+  const order = probs.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]);
+  const keep = new Set(); let cum = 0;
+  for (const [v,i] of order){ if (keep.size >= k) break; if (cum >= p && keep.size) break; keep.add(i); cum += v; }
+  const f = probs.map((v,i)=> keep.has(i) ? v : 0), s = f.reduce((a,b)=>a+b);
+  return {raw: probs, final: f.map(v=>v/s), keep};
+}
+const draw = (pr, R) => { let u = R(), j = 0; while (j < pr.length-1 && (u -= pr[j]) > 0) j++; return j; };
+function drawDist(){
+  const T=+$('#temp').value, k=+$('#topk').value, p=+$('#topp').value;
+  $('#tv').textContent=T.toFixed(2); $('#kv').textContent=k; $('#pv').textContent=p.toFixed(2);
+  const {final, keep} = decode(LOGITS,T,k,p);
+  bars($('#dist'), CANDS.map((c,i)=>`${c} (${LOGITS[i]})`), final, {max:1, dim: CANDS.map((_,i)=>!keep.has(i))});
+  $('#expl').innerHTML = `<b>温度</b>：logits 先除以 T 再 softmax。T&lt;1 让分布更尖（更确定），T&gt;1 更平（更随机）。当前 T=${T.toFixed(2)}。<br>
+    <b>Top-k</b>：只保留概率最高的 k 个（当前保留 ${Math.min(k,keep.size)} 个）。<br>
+    <b>Top-p（核采样）</b>：从高到低累加，保留累计概率刚好达到 p 的最小集合，候选数量随分布自适应。<br>
+    过滤后重新归一化。现在共有 <b>${keep.size}</b> 个候选。`;
+  $('#sampRes').innerHTML=''; $('#sampTxt').textContent='';
+}
+['temp','topk','topp'].forEach(id=>$('#'+id).oninput=()=>{ drawDist(); genDist(); });
+const PRE = {greedy:[0.05,10,1], std:[1,10,1], creative:[1.3,10,0.95], safe:[0.7,3,1]};
+$$('button[data-pre]').forEach(b=>b.onclick=()=>{ const [t,k,p]=PRE[b.dataset.pre]; $('#temp').value=t; $('#topk').value=k; $('#topp').value=p; drawDist(); genDist(); });
+let sseed = 1;
+$('#samp').onclick = ()=>{
+  const {final} = decode(LOGITS,+$('#temp').value,+$('#topk').value,+$('#topp').value), R = rng(sseed++);
+  const cnt = CANDS.map(()=>0), seq=[];
+  for (let i=0;i<50;i++){ const j=draw(final,R); cnt[j]++; seq.push(CANDS[j]); }
+  $('#sampTxt').textContent = `出现了 ${cnt.filter(Boolean).length} 种不同的词`;
+  $('#sampRes').innerHTML = seq.map(w=>`<span class="chip">${w}</span>`).join('');
+};
+
+/* ---------- 02 自回归生成（玩具语言模型） ---------- */
+const LM = {
+  '<s>':  {'今天':3,'我':2.5,'小猫':2,'天气':1.5},
+  '今天': {'天气':3,'我':2.2,'很':1.5,'的':1},
+  '天气': {'真':2.8,'很':2.5,'不错':1.5,'预报':1},
+  '真':   {'好':3,'不错':2.5,'热':2,'冷':1.8,'糟糕':0.5},
+  '很':   {'好':2.5,'热':2.2,'开心':2,'冷':1.8,'累':1.2},
+  '我':   {'想':2.5,'很':2.2,'们':1.8,'喜欢':2},
+  '想':   {'去':3,'吃':2.5,'睡觉':2,'学习':1.5},
+  '喜欢': {'小猫':2.8,'学习':2,'吃':1.8,'天气':0.5},
+  '小猫': {'在':2.5,'很':2.2,'想':2,'睡觉':1.8},
+  '在':   {'睡觉':3,'晒太阳':2.6,'吃':1.5,'学习':0.8},
+  '去':   {'公园':3,'学习':2,'吃':1.8,'睡觉':1.2},
+  '吃':   {'饭':3,'苹果':2.4,'鱼':2,'香蕉':1.5},
+  '们':   {'去':2.5,'想':2,'很':1.8},
+  '的':   {'天气':2.5,'小猫':2},
+  '学习':  {'大模型':3,'。':2.5,'很':1.2},
+};
+const END = '。';
+let gen = ['<s>'], gR = rng(5);
+function nextDist(){
+  const last = gen[gen.length-1], row = LM[last] || {};
+  const words = [...Object.keys(row), END], lg = [...Object.values(row), last==='<s>'?-9:1.6];
+  return {words, ...decode(lg, +$('#temp').value, +$('#topk').value, +$('#topp').value)};
+}
+function genDist(){
+  $('#genOut').innerHTML = gen.slice(1).map((w,i,a)=>`<span class="${i===a.length-1?'n':''}">${w}</span>`).join('') || '<span class="hint">（空）</span>';
+  if (gen[gen.length-1]===END){ $('#gDist').innerHTML='<p class="hint">遇到结束符 “。”，生成结束。</p>'; $('#g1').disabled=true; return; }
+  $('#g1').disabled=false;
+  const {words, final, keep} = nextDist();
+  $('#gTitle').textContent = `上一个 token 是 “${gen[gen.length-1]}”，下一步的候选分布：`;
+  bars($('#gDist'), words, final, {max:1, dim: words.map((_,i)=>!keep.has(i))});
+}
+function genOne(){ if (gen[gen.length-1]===END || gen.length>25) return false; const {words, final} = nextDist(); gen.push(words[draw(final,gR)]); genDist(); return true; }
+$('#g1').onclick = genOne;
+$('#gAll').onclick = async ()=>{ while (genOne()) await sleep(350); };
+$('#gR').onclick = ()=>{ gen=['<s>']; gR=rng(Date.now()%1e6); genDist(); };
+
+/* ---------- 03 KV Cache ---------- */
+const KTOK = ['我','想','学','习','大','模','型','的','原','理'];
+let kn = 0, cNo = 0, cYes = 0;
+function drawKV(){
+  const mk = cached => KTOK.slice(0,Math.max(kn,0)).map((t,i)=>{
+    const isNew = i===kn-1, cls = cached ? (isNew?'comp':'cached') : 'comp';
+    return `<div class="${cls}">${t}  K,V</div>`; }).join('') || '<p class="hint">点击“生成下一个 token”</p>';
+  $('#kvNo').innerHTML = mk(false); $('#kvYes').innerHTML = mk(true);
+  $('#cNo').firstChild.nodeValue = cNo; $('#cYes').firstChild.nodeValue = cYes;
+  $('#kvStep').disabled = kn >= KTOK.length;
+}
+$('#kvStep').onclick = ()=>{ kn++; cNo += kn; cYes += 1; drawKV(); };
+$('#kvReset').onclick = ()=>{ kn=0; cNo=0; cYes=0; drawKV(); };
+
+function drawMem(){
+  const v = ['ml','mh','md','ms','mb'].map(id=>+$('#'+id).value), b = +$('#mp').value;
+  const bytes = 2*v.reduce((a,c)=>a*c,1)*b, gb = bytes/1024**3;
+  $('#mem').textContent = gb >= 1 ? gb.toFixed(2)+' GB' : (bytes/1024**2).toFixed(0)+' MB';
+  const perTok = 2*v[0]*v[1]*v[2]*b;
+  $('#memTxt').textContent = `（每个 token ${(perTok/1024).toFixed(0)} KB）`;
+}
+['ml','mh','md','ms','mb','mp'].forEach(id=>$('#'+id).oninput=drawMem);
+$$('button[data-m]').forEach(b=>b.onclick=()=>{ const [l,h,d]=b.dataset.m.split(','); $('#ml').value=l; $('#mh').value=h; $('#md').value=d; drawMem(); });
+
+drawDist(); genDist(); drawKV(); drawMem();
+</script>
+</body>
+</html>
